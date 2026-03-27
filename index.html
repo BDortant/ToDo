@@ -1,0 +1,1204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ToDo</title>
+    <style>
+        /* ===== Reset & Base ===== */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f0f2f5;
+            color: #1a1a2e;
+            line-height: 1.5;
+        }
+
+        /* ===== Layout ===== */
+        .app {
+            display: grid;
+            grid-template-columns: 260px 1fr;
+            grid-template-rows: auto 1fr;
+            min-height: 100vh;
+        }
+
+        /* ===== Header / Toolbar ===== */
+        .toolbar {
+            grid-column: 1 / -1;
+            background: #1a1a2e;
+            color: #fff;
+            padding: 12px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+        }
+
+        .toolbar h1 {
+            font-size: 20px;
+            font-weight: 700;
+        }
+
+        .toolbar-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        /* ===== Sidebar ===== */
+        .sidebar {
+            background: #fff;
+            border-right: 1px solid #e0e0e0;
+            padding: 16px;
+            overflow-y: auto;
+        }
+
+        .sidebar h2 {
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #888;
+            margin-bottom: 12px;
+        }
+
+        .sidebar-section { margin-bottom: 24px; }
+
+        .project-list { list-style: none; }
+
+        .project-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.15s;
+        }
+
+        .project-item:hover { background: #f0f2f5; }
+        .project-item.active { background: #e8eaf6; font-weight: 600; }
+
+        .project-item-actions {
+            display: none;
+            gap: 4px;
+        }
+
+        .project-item:hover .project-item-actions { display: flex; }
+
+        .project-count {
+            background: #e0e0e0;
+            border-radius: 10px;
+            padding: 1px 8px;
+            font-size: 12px;
+            color: #555;
+            margin-left: 8px;
+        }
+
+        .view-toggle {
+            list-style: none;
+            margin-bottom: 8px;
+        }
+
+        .view-toggle li {
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.15s;
+        }
+
+        .view-toggle li:hover { background: #f0f2f5; }
+        .view-toggle li.active { background: #e8eaf6; font-weight: 600; }
+
+        /* ===== Main Content ===== */
+        .main {
+            padding: 24px;
+            overflow-y: auto;
+        }
+
+        .main-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+
+        .main-header h2 {
+            font-size: 22px;
+            font-weight: 700;
+        }
+
+        /* ===== Buttons ===== */
+        .btn {
+            padding: 7px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: background 0.15s, opacity 0.15s;
+        }
+
+        .btn:hover { opacity: 0.85; }
+
+        .btn-primary { background: #4361ee; color: #fff; }
+        .btn-secondary { background: #e0e0e0; color: #333; }
+        .btn-danger { background: #ef476f; color: #fff; }
+        .btn-success { background: #06d6a0; color: #1a1a2e; }
+        .btn-small { padding: 4px 10px; font-size: 12px; }
+        .btn-icon {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 4px;
+            font-size: 14px;
+            color: #888;
+            border-radius: 4px;
+        }
+        .btn-icon:hover { background: #e0e0e0; color: #333; }
+
+        /* ===== Todo Table ===== */
+        .todo-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #fff;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        }
+
+        .todo-table th {
+            background: #f8f9fa;
+            padding: 10px 14px;
+            text-align: left;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #666;
+            border-bottom: 2px solid #e0e0e0;
+            white-space: nowrap;
+        }
+
+        .todo-table td {
+            padding: 10px 14px;
+            font-size: 14px;
+            border-bottom: 1px solid #f0f0f0;
+            vertical-align: middle;
+        }
+
+        .todo-table tr:hover { background: #f8f9fa; }
+        .todo-table tr.done td { opacity: 0.5; text-decoration: line-through; }
+        .todo-table tr.cancelled td { opacity: 0.4; text-decoration: line-through; }
+
+        .todo-table tr[draggable="true"] { cursor: grab; }
+        .todo-table tr.dragging { opacity: 0.4; }
+        .todo-table tr.drag-over { border-top: 2px solid #4361ee; }
+
+        /* ===== Status & Priority Badges ===== */
+        .badge {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+
+        .badge-todo { background: #e0e0e0; color: #555; }
+        .badge-in-progress { background: #dbeafe; color: #1d4ed8; }
+        .badge-waiting-client { background: #fef3c7; color: #92400e; }
+        .badge-waiting-me { background: #fce7f3; color: #9d174d; }
+        .badge-waiting-third { background: #fde68a; color: #78350f; }
+        .badge-on-hold { background: #f3e8ff; color: #6b21a8; }
+        .badge-in-review { background: #cffafe; color: #0e7490; }
+        .badge-done { background: #d1fae5; color: #065f46; }
+        .badge-cancelled { background: #fee2e2; color: #991b1b; }
+
+        .effort-small { color: #06d6a0; }
+        .effort-medium { color: #ffd166; }
+        .effort-large { color: #ef476f; }
+
+        /* ===== Modal ===== */
+        .modal-backdrop {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.4);
+            z-index: 100;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-backdrop.open { display: flex; }
+
+        .modal {
+            background: #fff;
+            border-radius: 12px;
+            padding: 28px;
+            width: 560px;
+            max-width: 95vw;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+        }
+
+        .modal h3 {
+            font-size: 18px;
+            margin-bottom: 20px;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 4px;
+            color: #555;
+        }
+
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+
+        .form-group textarea { resize: vertical; min-height: 80px; }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .form-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            margin-top: 20px;
+        }
+
+        /* ===== Tags input ===== */
+        .tags-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            padding: 6px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            min-height: 38px;
+            align-items: center;
+        }
+
+        .tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            background: #e8eaf6;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+
+        .tag button {
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            color: #888;
+            padding: 0 2px;
+        }
+
+        .tags-input {
+            border: none !important;
+            outline: none;
+            flex: 1;
+            min-width: 80px;
+            padding: 4px !important;
+            font-size: 13px;
+        }
+
+        /* ===== Backup banner ===== */
+        .backup-banner {
+            display: none;
+            background: #fef3c7;
+            border: 1px solid #f59e0b;
+            border-radius: 8px;
+            padding: 12px 20px;
+            margin-bottom: 16px;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .backup-banner.show { display: flex; }
+
+        .backup-banner p { font-size: 14px; color: #92400e; }
+
+        /* ===== Empty state ===== */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #888;
+        }
+
+        .empty-state p { font-size: 16px; margin-bottom: 16px; }
+
+        /* ===== Project group header (all-items view) ===== */
+        .project-group-header {
+            font-size: 16px;
+            font-weight: 700;
+            margin: 24px 0 8px;
+            padding-bottom: 4px;
+            border-bottom: 2px solid #e0e0e0;
+        }
+
+        .project-group-header:first-child { margin-top: 0; }
+
+        /* ===== Filters bar ===== */
+        .filters-bar {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .filters-bar select,
+        .filters-bar input {
+            padding: 6px 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+
+        .notes-cell {
+            max-width: 250px;
+            white-space: pre-line;
+            color: #666;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="app">
+    <!-- Toolbar -->
+    <header class="toolbar">
+        <h1>ToDo</h1>
+        <div class="toolbar-actions">
+            <button class="btn btn-secondary btn-small" onclick="App.exportData()" title="Export backup">Export</button>
+            <button class="btn btn-secondary btn-small" onclick="document.getElementById('import-file').click()" title="Import backup">Import</button>
+            <input type="file" id="import-file" accept=".json" style="display:none" onchange="App.importData(event)">
+        </div>
+    </header>
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <div class="sidebar-section">
+            <h2>Views</h2>
+            <ul class="view-toggle" id="view-toggle">
+                <li class="active" data-view="all" onclick="App.setView('all')">All Items</li>
+                <li data-view="by-project" onclick="App.setView('by-project')">By Project</li>
+            </ul>
+        </div>
+        <div class="sidebar-section">
+            <h2>Projects</h2>
+            <ul class="project-list" id="project-list"></ul>
+            <button class="btn btn-primary btn-small" style="margin-top:8px;width:100%" onclick="App.openProjectModal()">+ New Project</button>
+        </div>
+    </aside>
+
+    <!-- Main content -->
+    <main class="main">
+        <div class="backup-banner" id="backup-banner">
+            <p>It's been over 24 hours since your last backup.</p>
+            <div style="display:flex;gap:8px">
+                <button class="btn btn-primary btn-small" onclick="App.exportData()">Backup Now</button>
+                <button class="btn btn-secondary btn-small" onclick="App.dismissBackupBanner()">Dismiss</button>
+            </div>
+        </div>
+
+        <div class="main-header">
+            <h2 id="main-title">All Items</h2>
+            <button class="btn btn-primary" onclick="App.openTodoModal()">+ New To-Do</button>
+        </div>
+
+        <div class="filters-bar">
+            <select id="filter-status" onchange="App.render()">
+                <option value="">All Statuses</option>
+                <option value="To Do">To Do</option>
+                <option value="In Progress">In Progress</option>
+                <option value="Waiting on Client">Waiting on Client</option>
+                <option value="Waiting on Me">Waiting on Me</option>
+                <option value="Waiting on Third Party">Waiting on Third Party</option>
+                <option value="On Hold">On Hold</option>
+                <option value="In Review">In Review</option>
+                <option value="Done">Done</option>
+                <option value="Cancelled">Cancelled</option>
+            </select>
+            <select id="filter-effort" onchange="App.render()">
+                <option value="">All Efforts</option>
+                <option value="small">Small</option>
+                <option value="medium">Medium</option>
+                <option value="large">Large</option>
+            </select>
+            <input type="text" id="filter-search" placeholder="Search..." oninput="App.render()">
+        </div>
+
+        <div id="main-content"></div>
+    </main>
+</div>
+
+<!-- Todo Modal -->
+<div class="modal-backdrop" id="todo-modal">
+    <div class="modal">
+        <h3 id="todo-modal-title">New To-Do</h3>
+        <form onsubmit="App.saveTodo(event)">
+            <input type="hidden" id="todo-id">
+
+            <div class="form-group">
+                <label>Title *</label>
+                <input type="text" id="todo-title" required>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Project</label>
+                    <select id="todo-project"></select>
+                </div>
+                <div class="form-group">
+                    <label>Status</label>
+                    <select id="todo-status">
+                        <option>To Do</option>
+                        <option>In Progress</option>
+                        <option>Waiting on Client</option>
+                        <option>Waiting on Me</option>
+                        <option>Waiting on Third Party</option>
+                        <option>On Hold</option>
+                        <option>In Review</option>
+                        <option>Done</option>
+                        <option>Cancelled</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Effort</label>
+                    <select id="todo-effort">
+                        <option value="">—</option>
+                        <option value="small">Small</option>
+                        <option value="medium">Medium</option>
+                        <option value="large">Large</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Deadline</label>
+                    <input type="date" id="todo-deadline">
+                </div>
+                <div class="form-group">
+                    <label>Assignee</label>
+                    <input type="text" id="todo-assignee">
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Tags</label>
+                <div class="tags-container" id="tags-container" onclick="document.getElementById('tags-input').focus()">
+                    <input type="text" class="tags-input" id="tags-input" placeholder="Type and press Enter">
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Notes</label>
+                <textarea id="todo-notes"></textarea>
+            </div>
+
+            <div class="form-actions">
+                <button type="button" class="btn btn-secondary" onclick="App.closeTodoModal()">Cancel</button>
+                <button type="submit" class="btn btn-primary">Save</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Project Modal -->
+<div class="modal-backdrop" id="project-modal">
+    <div class="modal">
+        <h3 id="project-modal-title">New Project</h3>
+        <form onsubmit="App.saveProject(event)">
+            <input type="hidden" id="project-id">
+            <div class="form-group">
+                <label>Project Name *</label>
+                <input type="text" id="project-name" required>
+            </div>
+            <div class="form-actions">
+                <button type="button" class="btn btn-secondary" onclick="App.closeProjectModal()">Cancel</button>
+                <button type="submit" class="btn btn-primary">Save</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+// =============================================================
+// STORAGE SERVICE
+// All data access goes through this module. Currently uses
+// localStorage. Designed so File System Access API can replace
+// the internals without changing the rest of the app.
+// =============================================================
+const StorageService = (() => {
+    const STORAGE_KEY = 'todo_app_data';
+
+    // Default data structure
+    function defaultData() {
+        return {
+            projects: [],
+            todos: [],
+            lastBackup: null
+        };
+    }
+
+    return {
+        // Load all data from storage
+        load() {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (!raw) return defaultData();
+            try {
+                return JSON.parse(raw);
+            } catch {
+                return defaultData();
+            }
+        },
+
+        // Save all data to storage
+        save(data) {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        },
+
+        // Export data as a JSON string (for file download)
+        exportJSON(data) {
+            return JSON.stringify(data, null, 2);
+        },
+
+        // Parse imported JSON string back into data
+        importJSON(jsonString) {
+            return JSON.parse(jsonString);
+        },
+
+        // Get/set last backup timestamp
+        getLastBackup(data) {
+            return data.lastBackup;
+        },
+
+        setLastBackup(data, timestamp) {
+            data.lastBackup = timestamp;
+        }
+    };
+})();
+
+
+// =============================================================
+// APP — State, logic, and rendering
+// =============================================================
+const App = (() => {
+    let data = StorageService.load();
+
+    // Migrate old "priority" field to new dual-priority fields
+    let needsMigration = false;
+    data.todos.forEach(todo => {
+        if (todo.priority !== undefined && todo.overallPriority === undefined) {
+            todo.overallPriority = todo.priority;
+            delete todo.priority;
+            needsMigration = true;
+        }
+    });
+    if (needsMigration) StorageService.save(data);
+
+    let currentView = 'all';           // 'all' or 'by-project'
+    let selectedProjectId = null;      // filter in sidebar
+    let editingTodoTags = [];          // temp tags for the form
+    let draggedRowId = null;           // drag-to-reorder
+
+    // --- Helpers ---
+    function generateId() {
+        return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    }
+
+    function persist() {
+        StorageService.save(data);
+    }
+
+    function statusToBadgeClass(status) {
+        const map = {
+            'To Do': 'badge-todo',
+            'In Progress': 'badge-in-progress',
+            'Waiting on Client': 'badge-waiting-client',
+            'Waiting on Me': 'badge-waiting-me',
+            'Waiting on Third Party': 'badge-waiting-third',
+            'On Hold': 'badge-on-hold',
+            'In Review': 'badge-in-review',
+            'Done': 'badge-done',
+            'Cancelled': 'badge-cancelled'
+        };
+        return map[status] || 'badge-todo';
+    }
+
+    function effortClass(effort) {
+        return effort ? `effort-${effort}` : '';
+    }
+
+    function escapeHTML(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    function getProjectName(projectId) {
+        const p = data.projects.find(p => p.id === projectId);
+        return p ? p.name : '—';
+    }
+
+    function getFilteredTodos(projectId) {
+        let todos = data.todos;
+
+        // Filter by project if specified
+        if (projectId) {
+            todos = todos.filter(t => t.projectId === projectId);
+        }
+
+        // Filter by status
+        const statusFilter = document.getElementById('filter-status').value;
+        if (statusFilter) {
+            todos = todos.filter(t => t.status === statusFilter);
+        }
+
+        // Filter by effort
+        const effortFilter = document.getElementById('filter-effort').value;
+        if (effortFilter) {
+            todos = todos.filter(t => t.effort === effortFilter);
+        }
+
+        // Search
+        const search = document.getElementById('filter-search').value.toLowerCase().trim();
+        if (search) {
+            todos = todos.filter(t =>
+                t.title.toLowerCase().includes(search) ||
+                (t.assignee && t.assignee.toLowerCase().includes(search)) ||
+                (t.notes && t.notes.toLowerCase().includes(search)) ||
+                (t.tags && t.tags.some(tag => tag.toLowerCase().includes(search)))
+            );
+        }
+
+        return todos.slice();
+    }
+
+    // --- Build a todo table ---
+    function buildTable(todos, showProject, sortBy) {
+        if (sortBy === 'project') {
+            todos = todos.slice().sort((a, b) => (a.projectPriority || 999) - (b.projectPriority || 999));
+        } else {
+            todos = todos.slice().sort((a, b) => (a.overallPriority || 999) - (b.overallPriority || 999));
+        }
+        if (todos.length === 0) {
+            return '<div class="empty-state"><p>No to-do items yet. Click "+ New To-Do" to get started.</p></div>';
+        }
+
+        let html = `<table class="todo-table">
+            <thead><tr>
+                <th style="width:30px" title="Overall Priority">O#</th>
+                <th style="width:30px" title="Project Priority">P#</th>
+                <th>Title</th>
+                ${showProject ? '<th>Project</th>' : ''}
+                <th>Status</th>
+                <th>Effort</th>
+                <th>Deadline</th>
+                <th>Assignee</th>
+                <th>Notes</th>
+                <th>Tags</th>
+                <th style="width:80px">Actions</th>
+            </tr></thead><tbody>`;
+
+        for (const todo of todos) {
+            const rowClass = todo.status === 'Done' ? 'done' : (todo.status === 'Cancelled' ? 'cancelled' : '');
+            html += `<tr class="${rowClass}" draggable="true"
+                data-id="${todo.id}"
+                ondragstart="App.onDragStart(event)"
+                ondragover="App.onDragOver(event)"
+                ondragleave="App.onDragLeave(event)"
+                ondrop="App.onDrop(event)"
+                ondragend="App.onDragEnd(event)">
+                <td style="color:#aaa">${todo.overallPriority || '—'}</td>
+                <td style="color:#aaa">${todo.projectPriority || '—'}</td>
+                <td><strong>${escapeHTML(todo.title)}</strong></td>
+                ${showProject ? `<td>${escapeHTML(getProjectName(todo.projectId))}</td>` : ''}
+                <td><span class="badge ${statusToBadgeClass(todo.status)}">${escapeHTML(todo.status)}</span></td>
+                <td class="${effortClass(todo.effort)}">${todo.effort ? todo.effort.charAt(0).toUpperCase() + todo.effort.slice(1) : '—'}</td>
+                <td>${todo.deadline || '—'}</td>
+                <td>${todo.assignee ? escapeHTML(todo.assignee) : '—'}</td>
+                <td class="notes-cell">${todo.notes ? escapeHTML(todo.notes) : '—'}</td>
+                <td>${(todo.tags || []).map(t => `<span class="tag">${escapeHTML(t)}</span>`).join(' ')}</td>
+                <td>
+                    <button class="btn-icon" onclick="App.openTodoModal('${todo.id}')" title="Edit">✏️</button>
+                    <button class="btn-icon" onclick="App.deleteTodo('${todo.id}')" title="Delete">🗑️</button>
+                </td>
+            </tr>`;
+        }
+
+        html += '</tbody></table>';
+        return html;
+    }
+
+    // --- Render ---
+    function render() {
+        // Sidebar: project list
+        const projectList = document.getElementById('project-list');
+        projectList.innerHTML = data.projects.map(p => {
+            const count = data.todos.filter(t => t.projectId === p.id).length;
+            const active = selectedProjectId === p.id ? 'active' : '';
+            return `<li class="project-item ${active}" onclick="App.selectProject('${p.id}')">
+                <span>${escapeHTML(p.name)} <span class="project-count">${count}</span></span>
+                <span class="project-item-actions">
+                    <button class="btn-icon" onclick="event.stopPropagation(); App.openProjectModal('${p.id}')" title="Rename">✏️</button>
+                    <button class="btn-icon" onclick="event.stopPropagation(); App.deleteProject('${p.id}')" title="Delete">🗑️</button>
+                </span>
+            </li>`;
+        }).join('');
+
+        // View toggle
+        document.querySelectorAll('#view-toggle li').forEach(li => {
+            li.classList.toggle('active', li.dataset.view === currentView);
+        });
+
+        // Main title
+        const titleEl = document.getElementById('main-title');
+
+        // Main content
+        const container = document.getElementById('main-content');
+
+        if (currentView === 'all') {
+            if (selectedProjectId) {
+                titleEl.textContent = getProjectName(selectedProjectId);
+                const todos = getFilteredTodos(selectedProjectId);
+                container.innerHTML = buildTable(todos, false, 'project');
+            } else {
+                titleEl.textContent = 'All Items';
+                const todos = getFilteredTodos(null);
+                container.innerHTML = buildTable(todos, true, 'overall');
+            }
+        } else {
+            // by-project view
+            titleEl.textContent = 'By Project';
+            let html = '';
+
+            // Items without a project
+            const unassigned = getFilteredTodos(null).filter(t => !t.projectId);
+            if (unassigned.length > 0) {
+                html += '<div class="project-group-header">No Project</div>';
+                html += buildTable(unassigned, false, 'overall');
+            }
+
+            for (const project of data.projects) {
+                const todos = getFilteredTodos(project.id);
+                html += `<div class="project-group-header">${escapeHTML(project.name)}</div>`;
+                if (todos.length === 0) {
+                    html += '<div class="empty-state"><p>No items in this project.</p></div>';
+                } else {
+                    html += buildTable(todos, false, 'project');
+                }
+            }
+
+            if (data.projects.length === 0 && unassigned.length === 0) {
+                html = '<div class="empty-state"><p>Create a project to get started, or add items without a project.</p></div>';
+            }
+
+            container.innerHTML = html;
+        }
+    }
+
+    // --- Views ---
+    function setView(view) {
+        currentView = view;
+        if (view === 'by-project') selectedProjectId = null;
+        render();
+    }
+
+    function selectProject(id) {
+        currentView = 'all';
+        selectedProjectId = selectedProjectId === id ? null : id;
+        render();
+    }
+
+    // --- Project CRUD ---
+    function openProjectModal(id) {
+        const modal = document.getElementById('project-modal');
+        const titleEl = document.getElementById('project-modal-title');
+        const nameInput = document.getElementById('project-name');
+        const idInput = document.getElementById('project-id');
+
+        if (id) {
+            const project = data.projects.find(p => p.id === id);
+            titleEl.textContent = 'Rename Project';
+            nameInput.value = project.name;
+            idInput.value = id;
+        } else {
+            titleEl.textContent = 'New Project';
+            nameInput.value = '';
+            idInput.value = '';
+        }
+
+        modal.classList.add('open');
+        nameInput.focus();
+    }
+
+    function closeProjectModal() {
+        document.getElementById('project-modal').classList.remove('open');
+    }
+
+    function saveProject(e) {
+        e.preventDefault();
+        const id = document.getElementById('project-id').value;
+        const name = document.getElementById('project-name').value.trim();
+        if (!name) return;
+
+        if (id) {
+            const project = data.projects.find(p => p.id === id);
+            project.name = name;
+        } else {
+            data.projects.push({ id: generateId(), name });
+        }
+
+        persist();
+        closeProjectModal();
+        render();
+    }
+
+    function deleteProject(id) {
+        const project = data.projects.find(p => p.id === id);
+        if (!confirm(`Delete project "${project.name}"? Items in this project will become unassigned.`)) return;
+
+        data.projects = data.projects.filter(p => p.id !== id);
+        // Unassign todos from this project
+        data.todos.forEach(t => {
+            if (t.projectId === id) t.projectId = '';
+        });
+
+        if (selectedProjectId === id) selectedProjectId = null;
+        persist();
+        render();
+    }
+
+    // --- Todo CRUD ---
+    function openTodoModal(id) {
+        const modal = document.getElementById('todo-modal');
+        const titleEl = document.getElementById('todo-modal-title');
+
+        // Populate project dropdown
+        const projectSelect = document.getElementById('todo-project');
+        projectSelect.innerHTML = '<option value="">— No Project —</option>' +
+            data.projects.map(p => `<option value="${p.id}">${escapeHTML(p.name)}</option>`).join('');
+
+        if (id) {
+            const todo = data.todos.find(t => t.id === id);
+            titleEl.textContent = 'Edit To-Do';
+            document.getElementById('todo-id').value = id;
+            document.getElementById('todo-title').value = todo.title;
+            document.getElementById('todo-project').value = todo.projectId || '';
+            document.getElementById('todo-status').value = todo.status;
+            document.getElementById('todo-effort').value = todo.effort || '';
+            document.getElementById('todo-deadline').value = todo.deadline || '';
+            document.getElementById('todo-assignee').value = todo.assignee || '';
+            document.getElementById('todo-notes').value = todo.notes || '';
+            editingTodoTags = [...(todo.tags || [])];
+        } else {
+            titleEl.textContent = 'New To-Do';
+            document.getElementById('todo-id').value = '';
+            document.getElementById('todo-title').value = '';
+            document.getElementById('todo-project').value = selectedProjectId || '';
+            document.getElementById('todo-status').value = 'To Do';
+            document.getElementById('todo-effort').value = '';
+            document.getElementById('todo-deadline').value = '';
+            document.getElementById('todo-assignee').value = '';
+            document.getElementById('todo-notes').value = '';
+            editingTodoTags = [];
+        }
+
+        renderTags();
+        modal.classList.add('open');
+        document.getElementById('todo-title').focus();
+    }
+
+    function closeTodoModal() {
+        document.getElementById('todo-modal').classList.remove('open');
+    }
+
+    function saveTodo(e) {
+        e.preventDefault();
+        const id = document.getElementById('todo-id').value;
+        const title = document.getElementById('todo-title').value.trim();
+        if (!title) return;
+
+        const newStatus = document.getElementById('todo-status').value;
+
+        if (id) {
+            const todo = data.todos.find(t => t.id === id);
+            const oldStatus = todo.status;
+            todo.title = title;
+            todo.projectId = document.getElementById('todo-project').value;
+            todo.status = newStatus;
+            // If project changed, put it at the end of the new project's list
+            const newProjectId = document.getElementById('todo-project').value;
+            if (todo.projectId !== newProjectId) {
+                todo.projectPriority = data.todos.filter(t => t.projectId === newProjectId).length + 1;
+            }
+            todo.effort = document.getElementById('todo-effort').value;
+            todo.deadline = document.getElementById('todo-deadline').value;
+            todo.assignee = document.getElementById('todo-assignee').value.trim();
+            todo.notes = document.getElementById('todo-notes').value;
+            todo.tags = [...editingTodoTags];
+
+            // Auto-set completedDate when status changes to Done
+            if (newStatus === 'Done' && oldStatus !== 'Done') {
+                todo.completedDate = new Date().toISOString();
+            } else if (newStatus !== 'Done') {
+                todo.completedDate = null;
+            }
+        } else {
+            data.todos.push({
+                id: generateId(),
+                title,
+                projectId: document.getElementById('todo-project').value,
+                status: newStatus,
+                overallPriority: data.todos.length + 1,
+                projectPriority: data.todos.filter(t => t.projectId === document.getElementById('todo-project').value).length + 1,
+                effort: document.getElementById('todo-effort').value,
+                deadline: document.getElementById('todo-deadline').value,
+                assignee: document.getElementById('todo-assignee').value.trim(),
+                notes: document.getElementById('todo-notes').value,
+                tags: [...editingTodoTags],
+                createdDate: new Date().toISOString(),
+                completedDate: newStatus === 'Done' ? new Date().toISOString() : null
+            });
+        }
+
+        persist();
+        closeTodoModal();
+        render();
+    }
+
+    function deleteTodo(id) {
+        const todo = data.todos.find(t => t.id === id);
+        if (!confirm(`Delete "${todo.title}"?`)) return;
+
+        data.todos = data.todos.filter(t => t.id !== id);
+        persist();
+        render();
+    }
+
+    // --- Tags ---
+    function renderTags() {
+        const container = document.getElementById('tags-container');
+        const input = document.getElementById('tags-input');
+
+        // Remove existing tags (keep only the input)
+        container.querySelectorAll('.tag').forEach(el => el.remove());
+
+        editingTodoTags.forEach((tag, i) => {
+            const el = document.createElement('span');
+            el.className = 'tag';
+            el.innerHTML = `${escapeHTML(tag)} <button type="button" onclick="App.removeTag(${i})">×</button>`;
+            container.insertBefore(el, input);
+        });
+    }
+
+    function removeTag(index) {
+        editingTodoTags.splice(index, 1);
+        renderTags();
+    }
+
+    // --- Drag to reorder ---
+    function onDragStart(e) {
+        draggedRowId = e.currentTarget.dataset.id;
+        e.currentTarget.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+    }
+
+    function onDragOver(e) {
+        e.preventDefault();
+        e.currentTarget.classList.add('drag-over');
+    }
+
+    function onDragLeave(e) {
+        e.currentTarget.classList.remove('drag-over');
+    }
+
+    function onDrop(e) {
+        e.preventDefault();
+        e.currentTarget.classList.remove('drag-over');
+        const targetId = e.currentTarget.dataset.id;
+        if (!draggedRowId || draggedRowId === targetId) return;
+
+        const draggedTodo = data.todos.find(t => t.id === draggedRowId);
+        const targetTodo = data.todos.find(t => t.id === targetId);
+        if (!draggedTodo || !targetTodo) return;
+
+        // Swap the relevant priority based on the current view
+        // If viewing a specific project or by-project view, swap project priority
+        // Otherwise swap overall priority
+        const useProjectPriority = currentView === 'by-project' || selectedProjectId;
+        if (useProjectPriority) {
+            const temp = draggedTodo.projectPriority;
+            draggedTodo.projectPriority = targetTodo.projectPriority;
+            targetTodo.projectPriority = temp;
+        } else {
+            const temp = draggedTodo.overallPriority;
+            draggedTodo.overallPriority = targetTodo.overallPriority;
+            targetTodo.overallPriority = temp;
+        }
+
+        persist();
+        render();
+    }
+
+    function onDragEnd(e) {
+        e.currentTarget.classList.remove('dragging');
+        draggedRowId = null;
+        document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+    }
+
+    // --- Export / Import ---
+    function exportData() {
+        StorageService.setLastBackup(data, new Date().toISOString());
+        persist();
+
+        const json = StorageService.exportJSON(data);
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `todo-backup-${new Date().toISOString().slice(0, 10)}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+
+        document.getElementById('backup-banner').classList.remove('show');
+    }
+
+    function importData(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = function(event) {
+            try {
+                const imported = StorageService.importJSON(event.target.result);
+                if (!imported.projects || !imported.todos) {
+                    throw new Error('Invalid format');
+                }
+                data = imported;
+                persist();
+                render();
+                alert('Data imported successfully!');
+            } catch {
+                alert('Failed to import: invalid file format.');
+            }
+        };
+        reader.readAsText(file);
+        e.target.value = '';
+    }
+
+    // --- Auto-backup check ---
+    function checkBackup() {
+        const last = StorageService.getLastBackup(data);
+        if (!last) {
+            // No backup has ever been made — only show banner if there's data
+            if (data.todos.length > 0) {
+                document.getElementById('backup-banner').classList.add('show');
+            }
+            return;
+        }
+
+        const hoursSince = (Date.now() - new Date(last).getTime()) / (1000 * 60 * 60);
+        if (hoursSince >= 24) {
+            document.getElementById('backup-banner').classList.add('show');
+        }
+    }
+
+    function dismissBackupBanner() {
+        document.getElementById('backup-banner').classList.remove('show');
+    }
+
+    // --- Init ---
+    function init() {
+        // Tags input: add tag on Enter
+        document.getElementById('tags-input').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const val = this.value.trim();
+                if (val && !editingTodoTags.includes(val)) {
+                    editingTodoTags.push(val);
+                    renderTags();
+                }
+                this.value = '';
+            }
+        });
+
+        // Close modals on backdrop click
+        document.querySelectorAll('.modal-backdrop').forEach(backdrop => {
+            backdrop.addEventListener('click', function(e) {
+                if (e.target === this) this.classList.remove('open');
+            });
+        });
+
+        // Close modals on Escape
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                document.querySelectorAll('.modal-backdrop.open').forEach(m => m.classList.remove('open'));
+            }
+        });
+
+        checkBackup();
+        render();
+    }
+
+    // Start the app
+    init();
+
+    // Public API
+    return {
+        render,
+        setView,
+        selectProject,
+        openProjectModal,
+        closeProjectModal,
+        saveProject,
+        deleteProject,
+        openTodoModal,
+        closeTodoModal,
+        saveTodo,
+        deleteTodo,
+        removeTag,
+        onDragStart,
+        onDragOver,
+        onDragLeave,
+        onDrop,
+        onDragEnd,
+        exportData,
+        importData,
+        dismissBackupBanner
+    };
+})();
+</script>
+
+</body>
+</html>
