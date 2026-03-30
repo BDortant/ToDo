@@ -188,12 +188,15 @@
         }
 
         .todo-table tr:hover { background: #f8f9fa; }
-        .todo-table tr.done td { opacity: 0.5; text-decoration: line-through; }
-        .todo-table tr.cancelled td { opacity: 0.4; text-decoration: line-through; }
+        .todo-table tr.done td { opacity: 0.5; }
+        .todo-table tr.done td strong { text-decoration: line-through; }
+        .todo-table tr.cancelled td { opacity: 0.4; }
+        .todo-table tr.cancelled td strong { text-decoration: line-through; }
 
         .todo-table tr[draggable="true"] { cursor: grab; }
         .todo-table tr.dragging { opacity: 0.4; }
-        .todo-table tr.drag-over { border-top: 2px solid #4361ee; }
+        .todo-table tr.drag-over-top { border-top: 2px solid #4361ee; }
+        .todo-table tr.drag-over-bottom { border-bottom: 2px solid #4361ee; }
 
         /* ===== Status & Priority Badges ===== */
         .badge {
@@ -385,6 +388,37 @@
             color: #666;
             font-size: 13px;
         }
+
+        /* ===== Inline editing ===== */
+        .inline-select {
+            padding: 2px 6px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 12px;
+            font-family: inherit;
+            background: #fff;
+            cursor: pointer;
+        }
+
+        .inline-input {
+            padding: 4px 8px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 13px;
+            font-family: inherit;
+            width: 100%;
+        }
+
+        .clickable-cell {
+            cursor: pointer;
+            border-radius: 4px;
+            transition: background 0.15s;
+        }
+
+        .clickable-cell:hover {
+            background: #e8eaf6;
+        }
+
     </style>
 </head>
 <body>
@@ -715,8 +749,12 @@ const App = (() => {
             return '<div class="empty-state"><p>No to-do items yet. Click "+ New To-Do" to get started.</p></div>';
         }
 
+        const statusOptions = ['To Do', 'In Progress', 'Waiting on Client', 'Waiting on Me', 'Waiting on Third Party', 'On Hold', 'In Review', 'Done', 'Cancelled'];
+        const effortOptions = ['', 'small', 'medium', 'large'];
+
         let html = `<table class="todo-table">
             <thead><tr>
+                <th style="width:30px"></th>
                 <th style="width:30px" title="Overall Priority">O#</th>
                 <th style="width:30px" title="Project Priority">P#</th>
                 <th>Title</th>
@@ -732,6 +770,22 @@ const App = (() => {
 
         for (const todo of todos) {
             const rowClass = todo.status === 'Done' ? 'done' : (todo.status === 'Cancelled' ? 'cancelled' : '');
+            // Status inline select
+            const statusSelect = `<select class="inline-select" onchange="App.inlineUpdate('${todo.id}', 'status', this.value)">
+                ${statusOptions.map(s => `<option value="${s}" ${todo.status === s ? 'selected' : ''}>${s}</option>`).join('')}
+            </select>`;
+
+            // Effort inline select
+            const effortSelect = `<select class="inline-select" onchange="App.inlineUpdate('${todo.id}', 'effort', this.value)">
+                ${effortOptions.map(e => `<option value="${e}" ${todo.effort === e ? 'selected' : ''}>${e ? e.charAt(0).toUpperCase() + e.slice(1) : '—'}</option>`).join('')}
+            </select>`;
+
+            // Deadline inline input
+            const deadlineInput = `<input type="date" class="inline-input" value="${todo.deadline || ''}" onchange="App.inlineUpdate('${todo.id}', 'deadline', this.value)" style="width:130px">`;
+
+            // Assignee inline input
+            const assigneeInput = `<input type="text" class="inline-input" value="${todo.assignee ? escapeHTML(todo.assignee) : ''}" placeholder="—" onblur="App.inlineUpdate('${todo.id}', 'assignee', this.value)" onkeydown="if(event.key==='Enter'){this.blur()}" style="width:100px">`;
+
             html += `<tr class="${rowClass}" draggable="true"
                 data-id="${todo.id}"
                 ondragstart="App.onDragStart(event)"
@@ -739,15 +793,16 @@ const App = (() => {
                 ondragleave="App.onDragLeave(event)"
                 ondrop="App.onDrop(event)"
                 ondragend="App.onDragEnd(event)">
+                <td><input type="checkbox" ${todo.status === 'Done' ? 'checked' : ''} onchange="App.toggleDone('${todo.id}')" title="Mark as done"></td>
                 <td style="color:#aaa">${todo.overallPriority || '—'}</td>
                 <td style="color:#aaa">${todo.projectPriority || '—'}</td>
                 <td><strong>${escapeHTML(todo.title)}</strong></td>
                 ${showProject ? `<td>${escapeHTML(getProjectName(todo.projectId))}</td>` : ''}
-                <td><span class="badge ${statusToBadgeClass(todo.status)}">${escapeHTML(todo.status)}</span></td>
-                <td class="${effortClass(todo.effort)}">${todo.effort ? todo.effort.charAt(0).toUpperCase() + todo.effort.slice(1) : '—'}</td>
-                <td>${todo.deadline || '—'}</td>
-                <td>${todo.assignee ? escapeHTML(todo.assignee) : '—'}</td>
-                <td class="notes-cell">${todo.notes ? escapeHTML(todo.notes) : '—'}</td>
+                <td>${statusSelect}</td>
+                <td>${effortSelect}</td>
+                <td>${deadlineInput}</td>
+                <td>${assigneeInput}</td>
+                <td class="notes-cell clickable-cell" onclick="App.editNotes(this, '${todo.id}')">${todo.notes ? escapeHTML(todo.notes) : '—'}</td>
                 <td>${(todo.tags || []).map(t => `<span class="tag">${escapeHTML(t)}</span>`).join(' ')}</td>
                 <td>
                     <button class="btn-icon" onclick="App.openTodoModal('${todo.id}')" title="Edit">✏️</button>
@@ -1006,6 +1061,72 @@ const App = (() => {
         render();
     }
 
+    function inlineUpdate(id, field, value) {
+        const todo = data.todos.find(t => t.id === id);
+        if (!todo) return;
+
+        if (field === 'status') {
+            const oldStatus = todo.status;
+            todo.status = value;
+            // Handle completedDate when status changes
+            if (value === 'Done' && oldStatus !== 'Done') {
+                todo.previousStatus = oldStatus;
+                todo.completedDate = new Date().toISOString();
+            } else if (value !== 'Done' && oldStatus === 'Done') {
+                todo.completedDate = null;
+                delete todo.previousStatus;
+            }
+        } else {
+            todo[field] = value;
+        }
+
+        persist();
+        render();
+    }
+
+    function editNotes(cell, id) {
+        const todo = data.todos.find(t => t.id === id);
+        if (!todo) return;
+
+        const textarea = document.createElement('textarea');
+        textarea.className = 'inline-input';
+        textarea.value = todo.notes || '';
+
+        cell.textContent = '';
+        cell.classList.remove('clickable-cell');
+        cell.onclick = null;
+        cell.appendChild(textarea);
+
+        // Size the textarea to fit the content plus one extra line
+        textarea.style.height = 'auto';
+        textarea.style.height = (textarea.scrollHeight + 20) + 'px';
+        textarea.focus();
+
+        textarea.addEventListener('blur', () => {
+            inlineUpdate(id, 'notes', textarea.value);
+        });
+    }
+
+    function toggleDone(id) {
+        const todo = data.todos.find(t => t.id === id);
+        if (!todo) return;
+
+        if (todo.status === 'Done') {
+            // Restore the previous status, or fall back to "To Do"
+            todo.status = todo.previousStatus || 'To Do';
+            todo.completedDate = null;
+            delete todo.previousStatus;
+        } else {
+            // Save the current status before marking as Done
+            todo.previousStatus = todo.status;
+            todo.status = 'Done';
+            todo.completedDate = new Date().toISOString();
+        }
+
+        persist();
+        render();
+    }
+
     // --- Tags ---
     function renderTags() {
         const container = document.getElementById('tags-container');
@@ -1036,16 +1157,32 @@ const App = (() => {
 
     function onDragOver(e) {
         e.preventDefault();
-        e.currentTarget.classList.add('drag-over');
+        const row = e.currentTarget;
+        row.classList.remove('drag-over-top', 'drag-over-bottom');
+
+        // Determine drag direction to show the indicator on the correct side
+        const targetId = row.dataset.id;
+        const draggedTodo = data.todos.find(t => t.id === draggedRowId);
+        const targetTodo = data.todos.find(t => t.id === targetId);
+        if (!draggedTodo || !targetTodo) return;
+
+        const useProjectPriority = currentView === 'by-project' || selectedProjectId;
+        const key = useProjectPriority ? 'projectPriority' : 'overallPriority';
+
+        if (draggedTodo[key] < targetTodo[key]) {
+            row.classList.add('drag-over-bottom');
+        } else {
+            row.classList.add('drag-over-top');
+        }
     }
 
     function onDragLeave(e) {
-        e.currentTarget.classList.remove('drag-over');
+        e.currentTarget.classList.remove('drag-over-top', 'drag-over-bottom');
     }
 
     function onDrop(e) {
         e.preventDefault();
-        e.currentTarget.classList.remove('drag-over');
+        e.currentTarget.classList.remove('drag-over-top', 'drag-over-bottom');
         const targetId = e.currentTarget.dataset.id;
         if (!draggedRowId || draggedRowId === targetId) return;
 
@@ -1053,19 +1190,30 @@ const App = (() => {
         const targetTodo = data.todos.find(t => t.id === targetId);
         if (!draggedTodo || !targetTodo) return;
 
-        // Swap the relevant priority based on the current view
-        // If viewing a specific project or by-project view, swap project priority
-        // Otherwise swap overall priority
+        // Insert the dragged item at the target position, shifting others accordingly
         const useProjectPriority = currentView === 'by-project' || selectedProjectId;
-        if (useProjectPriority) {
-            const temp = draggedTodo.projectPriority;
-            draggedTodo.projectPriority = targetTodo.projectPriority;
-            targetTodo.projectPriority = temp;
+        const key = useProjectPriority ? 'projectPriority' : 'overallPriority';
+
+        const fromPos = draggedTodo[key];
+        const toPos = targetTodo[key];
+
+        // Get all todos that participate in this priority space
+        const affected = useProjectPriority
+            ? data.todos.filter(t => t.projectId === draggedTodo.projectId)
+            : data.todos;
+
+        if (fromPos < toPos) {
+            // Dragging down: shift items between fromPos+1 and toPos up by 1
+            affected.forEach(t => {
+                if (t[key] > fromPos && t[key] <= toPos) t[key]--;
+            });
         } else {
-            const temp = draggedTodo.overallPriority;
-            draggedTodo.overallPriority = targetTodo.overallPriority;
-            targetTodo.overallPriority = temp;
+            // Dragging up: shift items between toPos and fromPos-1 down by 1
+            affected.forEach(t => {
+                if (t[key] >= toPos && t[key] < fromPos) t[key]++;
+            });
         }
+        draggedTodo[key] = toPos;
 
         persist();
         render();
@@ -1074,7 +1222,7 @@ const App = (() => {
     function onDragEnd(e) {
         e.currentTarget.classList.remove('dragging');
         draggedRowId = null;
-        document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+        document.querySelectorAll('.drag-over-top, .drag-over-bottom').forEach(el => el.classList.remove('drag-over-top', 'drag-over-bottom'));
     }
 
     // --- Export / Import ---
@@ -1187,6 +1335,9 @@ const App = (() => {
         closeTodoModal,
         saveTodo,
         deleteTodo,
+        toggleDone,
+        inlineUpdate,
+        editNotes,
         removeTag,
         onDragStart,
         onDragOver,
