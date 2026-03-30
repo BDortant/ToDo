@@ -40,10 +40,6 @@
             font-weight: 700;
         }
 
-        .toolbar-actions {
-            display: flex;
-            gap: 8px;
-        }
 
         /* ===== Sidebar ===== */
         .sidebar {
@@ -129,6 +125,19 @@
             font-weight: 700;
         }
 
+        .main-header-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .header-divider {
+            width: 1px;
+            height: 24px;
+            background: #ddd;
+            margin: 0 4px;
+        }
+
         /* ===== Buttons ===== */
         .btn {
             padding: 7px 16px;
@@ -147,6 +156,8 @@
         .btn-danger { background: #ef476f; color: #fff; }
         .btn-success { background: #06d6a0; color: #1a1a2e; }
         .btn-small { padding: 4px 10px; font-size: 12px; }
+        .btn-outline { background: #fff; color: #555; border: 1px solid #ddd; }
+        .btn-outline:hover { background: #f0f2f5; opacity: 1; }
         .btn-icon {
             background: none;
             border: none;
@@ -427,11 +438,7 @@
     <!-- Toolbar -->
     <header class="toolbar">
         <h1>ToDo</h1>
-        <div class="toolbar-actions">
-            <button class="btn btn-secondary btn-small" onclick="App.exportData()" title="Export backup">Export</button>
-            <button class="btn btn-secondary btn-small" onclick="document.getElementById('import-file').click()" title="Import backup">Import</button>
-            <input type="file" id="import-file" accept=".json" style="display:none" onchange="App.importData(event)">
-        </div>
+        <input type="file" id="import-file" accept=".json" style="display:none" onchange="App.importData(event)">
     </header>
 
     <!-- Sidebar -->
@@ -462,7 +469,13 @@
 
         <div class="main-header">
             <h2 id="main-title">All Items</h2>
-            <button class="btn btn-primary" onclick="App.openTodoModal()">+ New To-Do</button>
+            <div class="main-header-actions">
+                <button class="btn btn-primary" onclick="App.openTodoModal()">+ New To-Do</button>
+                <span class="header-divider"></span>
+                <button class="btn btn-outline btn-small" onclick="App.cleanup()" title="Remove tasks done more than 1 working day ago">🧹 Cleanup</button>
+                <button class="btn btn-outline btn-small" onclick="App.exportData()" title="Export backup">📥 Export</button>
+                <button class="btn btn-outline btn-small" onclick="document.getElementById('import-file').click()" title="Import backup">📤 Import</button>
+            </div>
         </div>
 
         <div class="filters-bar">
@@ -485,6 +498,12 @@
                 <option value="large">Large</option>
             </select>
             <input type="text" id="filter-search" placeholder="Search..." oninput="App.render()">
+            <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;margin-left:8px">
+                <input type="checkbox" id="filter-hide-done" onchange="App.toggleFilter('hide-done')"> Hide done
+            </label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;margin-left:8px">
+                <input type="checkbox" id="filter-daily" onchange="App.toggleFilter('daily')"> Daily
+            </label>
         </div>
 
         <div id="main-content"></div>
@@ -660,6 +679,27 @@ const App = (() => {
     });
     if (needsMigration) StorageService.save(data);
 
+    // One-time fix: move done items to priority 0 (top of list)
+    if (!data._donePriorityFixed2) {
+        // Overall priority: done items get 0, open items keep their order starting at 1
+        const openItems = data.todos.filter(t => t.status !== 'Done').sort((a, b) => (a.overallPriority || 999) - (b.overallPriority || 999));
+        const doneItems = data.todos.filter(t => t.status === 'Done');
+        doneItems.forEach(t => { t.overallPriority = 0; });
+        openItems.forEach((t, i) => { t.overallPriority = i + 1; });
+
+        // Project priority: same per project
+        const projects = [...new Set(data.todos.map(t => t.projectId).filter(Boolean))];
+        for (const pid of projects) {
+            const open = data.todos.filter(t => t.projectId === pid && t.status !== 'Done').sort((a, b) => (a.projectPriority || 999) - (b.projectPriority || 999));
+            const done = data.todos.filter(t => t.projectId === pid && t.status === 'Done');
+            done.forEach(t => { t.projectPriority = 0; });
+            open.forEach((t, i) => { t.projectPriority = i + 1; });
+        }
+
+        data._donePriorityFixed2 = true;
+        StorageService.save(data);
+    }
+
     let currentView = 'all';           // 'all' or 'by-project'
     let selectedProjectId = null;      // filter in sidebar
     let editingTodoTags = [];          // temp tags for the form
@@ -712,6 +752,47 @@ const App = (() => {
             todos = todos.filter(t => t.projectId === projectId);
         }
 
+        // Daily view: show done since last working day + open items planned for today
+        const dailyMode = document.getElementById('filter-daily').checked;
+        if (dailyMode) {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const tomorrow = new Date(today);
+            tomorrow.setDate(tomorrow.getDate() + 1);
+
+            // Find the last working day (skip weekends)
+            // On Monday (day 1): go back to Friday (3 days)
+            // On Sunday (day 0): go back to Friday (2 days)
+            // On Saturday (day 6): go back to Friday (1 day)
+            // Otherwise: go back 1 day
+            const lastWorkDay = new Date(today);
+            const dayOfWeek = today.getDay();
+            if (dayOfWeek === 1) lastWorkDay.setDate(lastWorkDay.getDate() - 3);
+            else if (dayOfWeek === 0) lastWorkDay.setDate(lastWorkDay.getDate() - 2);
+            else lastWorkDay.setDate(lastWorkDay.getDate() - 1);
+
+            const todayStr = today.toISOString().slice(0, 10);
+
+            todos = todos.filter(t => {
+                // Done items completed since last working day
+                if (t.status === 'Done' && t.completedDate) {
+                    const completed = new Date(t.completedDate);
+                    return completed >= lastWorkDay && completed < tomorrow;
+                }
+                // All open items (not Done, not Cancelled)
+                if (t.status !== 'Done' && t.status !== 'Cancelled') {
+                    return true;
+                }
+                return false;
+            });
+        }
+
+        // Hide done items
+        const hideDone = document.getElementById('filter-hide-done').checked;
+        if (hideDone) {
+            todos = todos.filter(t => t.status !== 'Done');
+        }
+
         // Filter by status
         const statusFilter = document.getElementById('filter-status').value;
         if (statusFilter) {
@@ -741,9 +822,9 @@ const App = (() => {
     // --- Build a todo table ---
     function buildTable(todos, showProject, sortBy) {
         if (sortBy === 'project') {
-            todos = todos.slice().sort((a, b) => (a.projectPriority || 999) - (b.projectPriority || 999));
+            todos = todos.slice().sort((a, b) => (a.projectPriority ?? 999) - (b.projectPriority ?? 999));
         } else {
-            todos = todos.slice().sort((a, b) => (a.overallPriority || 999) - (b.overallPriority || 999));
+            todos = todos.slice().sort((a, b) => (a.overallPriority ?? 999) - (b.overallPriority ?? 999));
         }
         if (todos.length === 0) {
             return '<div class="empty-state"><p>No to-do items yet. Click "+ New To-Do" to get started.</p></div>';
@@ -1061,6 +1142,20 @@ const App = (() => {
         render();
     }
 
+    function toggleFilter(which) {
+        const hideDone = document.getElementById('filter-hide-done');
+        const daily = document.getElementById('filter-daily');
+
+        // Mutually exclusive: uncheck the other
+        if (which === 'hide-done' && hideDone.checked) {
+            daily.checked = false;
+        } else if (which === 'daily' && daily.checked) {
+            hideDone.checked = false;
+        }
+
+        render();
+    }
+
     function inlineUpdate(id, field, value) {
         const todo = data.todos.find(t => t.id === id);
         if (!todo) return;
@@ -1068,13 +1163,14 @@ const App = (() => {
         if (field === 'status') {
             const oldStatus = todo.status;
             todo.status = value;
-            // Handle completedDate when status changes
             if (value === 'Done' && oldStatus !== 'Done') {
                 todo.previousStatus = oldStatus;
                 todo.completedDate = new Date().toISOString();
+                movePriorityForDone(todo, true);
             } else if (value !== 'Done' && oldStatus === 'Done') {
                 todo.completedDate = null;
                 delete todo.previousStatus;
+                movePriorityForDone(todo, false);
             }
         } else {
             todo[field] = value;
@@ -1107,20 +1203,62 @@ const App = (() => {
         });
     }
 
+    // Move a done item to the bottom of priority lists, or restore when un-done
+    function movePriorityForDone(todo, markingDone) {
+        if (markingDone) {
+            // Save current priorities so we can restore later
+            todo.previousOverallPriority = todo.overallPriority;
+            todo.previousProjectPriority = todo.projectPriority;
+
+            // Move to top: set to 0, shift others above the old position down to fill gap
+            const oldOverall = todo.overallPriority;
+            data.todos.forEach(t => {
+                if (t !== todo && t.overallPriority > oldOverall) t.overallPriority--;
+            });
+            todo.overallPriority = 0;
+
+            if (todo.projectId) {
+                const oldProject = todo.projectPriority;
+                data.todos.forEach(t => {
+                    if (t !== todo && t.projectId === todo.projectId && t.projectPriority > oldProject) t.projectPriority--;
+                });
+                todo.projectPriority = 0;
+            }
+        } else {
+            // Restore previous priorities, shifting others to make room
+            const targetOverall = todo.previousOverallPriority || 1;
+            data.todos.forEach(t => {
+                if (t !== todo && t.overallPriority >= targetOverall) t.overallPriority++;
+            });
+            todo.overallPriority = targetOverall;
+
+            if (todo.projectId) {
+                const targetProject = todo.previousProjectPriority || 1;
+                data.todos.forEach(t => {
+                    if (t !== todo && t.projectId === todo.projectId && t.projectPriority >= targetProject) t.projectPriority++;
+                });
+                todo.projectPriority = targetProject;
+            }
+
+            delete todo.previousOverallPriority;
+            delete todo.previousProjectPriority;
+        }
+    }
+
     function toggleDone(id) {
         const todo = data.todos.find(t => t.id === id);
         if (!todo) return;
 
         if (todo.status === 'Done') {
-            // Restore the previous status, or fall back to "To Do"
             todo.status = todo.previousStatus || 'To Do';
             todo.completedDate = null;
             delete todo.previousStatus;
+            movePriorityForDone(todo, false);
         } else {
-            // Save the current status before marking as Done
             todo.previousStatus = todo.status;
             todo.status = 'Done';
             todo.completedDate = new Date().toISOString();
+            movePriorityForDone(todo, true);
         }
 
         persist();
@@ -1226,6 +1364,36 @@ const App = (() => {
     }
 
     // --- Export / Import ---
+    function cleanup() {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        // Find the cutoff: start of last working day
+        const cutoff = new Date(today);
+        const dayOfWeek = today.getDay();
+        if (dayOfWeek === 1) cutoff.setDate(cutoff.getDate() - 3);       // Monday -> Friday
+        else if (dayOfWeek === 0) cutoff.setDate(cutoff.getDate() - 2);   // Sunday -> Friday
+        else if (dayOfWeek === 6) cutoff.setDate(cutoff.getDate() - 1);   // Saturday -> Friday
+        else cutoff.setDate(cutoff.getDate() - 1);                        // Weekday -> yesterday
+
+        const toRemove = data.todos.filter(t =>
+            t.status === 'Done' && t.completedDate && new Date(t.completedDate) < cutoff
+        );
+
+        if (toRemove.length === 0) {
+            alert('Nothing to clean up.');
+            return;
+        }
+
+        if (!confirm(`Remove ${toRemove.length} task(s) completed before ${cutoff.toLocaleDateString()}?`)) return;
+
+        const removeIds = new Set(toRemove.map(t => t.id));
+        data.todos = data.todos.filter(t => !removeIds.has(t.id));
+
+        persist();
+        render();
+    }
+
     function exportData() {
         StorageService.setLastBackup(data, new Date().toISOString());
         persist();
@@ -1336,6 +1504,7 @@ const App = (() => {
         saveTodo,
         deleteTodo,
         toggleDone,
+        toggleFilter,
         inlineUpdate,
         editNotes,
         removeTag,
@@ -1344,6 +1513,7 @@ const App = (() => {
         onDragLeave,
         onDrop,
         onDragEnd,
+        cleanup,
         exportData,
         importData,
         dismissBackupBanner
