@@ -452,13 +452,13 @@ const App = (() => {
             const todo = data.todos.find(t => t.id === id);
             const oldStatus = todo.status;
             todo.title = title;
-            todo.projectId = document.getElementById('todo-project').value;
             todo.status = newStatus;
             // If project changed, put it at the end of the new project's list
             const newProjectId = document.getElementById('todo-project').value;
             if (todo.projectId !== newProjectId) {
                 todo.projectPriority = data.todos.filter(t => t.projectId === newProjectId).length + 1;
             }
+            todo.projectId = newProjectId;
             todo.effort = document.getElementById('todo-effort').value;
             todo.deadline = document.getElementById('todo-deadline').value;
             todo.assignee = document.getElementById('todo-assignee').value.trim();
