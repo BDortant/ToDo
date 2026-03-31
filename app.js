@@ -100,6 +100,11 @@ const App = (() => {
         return div.innerHTML;
     }
 
+    function escapeAttr(str) {
+        if (str == null) return '';
+        return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
     function getProjectName(projectId) {
         const p = data.projects.find(p => p.id === projectId);
         return p ? p.name : '—';
@@ -226,7 +231,7 @@ const App = (() => {
             const deadlineInput = `<input type="date" class="inline-input" value="${todo.deadline || ''}" onchange="App.inlineUpdate('${todo.id}', 'deadline', this.value)" style="width:130px">`;
 
             // Assignee inline input
-            const assigneeInput = `<input type="text" class="inline-input" value="${todo.assignee ? escapeHTML(todo.assignee) : ''}" placeholder="—" onblur="App.inlineUpdate('${todo.id}', 'assignee', this.value)" onkeydown="if(event.key==='Enter'){this.blur()}" style="width:100px">`;
+            const assigneeInput = `<input type="text" class="inline-input" value="${escapeAttr(todo.assignee)}" placeholder="—" onblur="App.inlineUpdate('${todo.id}', 'assignee', this.value)" onkeydown="if(event.key==='Enter'){this.blur()}" style="width:100px">`;
 
             html += `<tr class="${rowClass}" draggable="true"
                 data-id="${todo.id}"
