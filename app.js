@@ -249,7 +249,7 @@ const App = (() => {
                 <td>${effortSelect}</td>
                 <td>${deadlineInput}</td>
                 <td>${assigneeInput}</td>
-                <td class="notes-cell clickable-cell" onclick="App.editNotes(this, '${todo.id}')">${todo.notes ? escapeHTML(todo.notes) : '—'}</td>
+                <td class="notes-cell clickable-cell" tabindex="0" onclick="App.editNotes(this, '${todo.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();App.editNotes(this,'${todo.id}')}">${todo.notes ? escapeHTML(todo.notes) : '—'}</td>
                 <td>${(todo.tags || []).map(t => `<span class="tag">${escapeHTML(t)}</span>`).join(' ')}</td>
                 <td>
                     <button class="btn-icon" onclick="App.openTodoModal('${todo.id}')" title="Edit">✏️</button>
