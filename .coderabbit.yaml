@@ -1,0 +1,58 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+tone_instructions: >-
+  Be concise. Tag: [BLOCKER] production-breaking, [IMPORTANT] serious,
+  [NICE] minor (max 3). Order by priority.
+reviews:
+  auto_title_instructions: |
+    Format: "<type>: <description>"
+    Types: feat, fix, refactor, perf, test, docs, chore
+  sequence_diagrams: false
+  related_issues: false
+  related_prs: false
+  poem: false
+  path_instructions:
+    - path: '**/*.js'
+      instructions: >
+        [BLOCKER]: XSS vulnerabilities (unescaped user input in innerHTML),
+        data loss risks (missing persist() calls after state changes).
+
+        [IMPORTANT]: Logic errors in filtering/sorting, broken drag-and-drop
+        reordering, inconsistent state updates.
+
+        [NICE]: Code clarity improvements.
+    - path: '**/*.css'
+      instructions: >
+        [NICE] only: Accessibility concerns, layout issues.
+    - path: '**/*.html'
+      instructions: >
+        [IMPORTANT]: Missing accessibility attributes, broken form structure.
+
+        [NICE]: Semantic HTML improvements.
+  auto_review:
+    base_branches:
+      - main
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+  tools:
+    markdownlint:
+      enabled: false
+    github-checks:
+      enabled: false
+    languagetool:
+      enabled: false
+    biome:
+      enabled: false
+    eslint:
+      enabled: false
+chat:
+  art: false
+knowledge_base:
+  learnings:
+    scope: local
+  issues:
+    scope: local
+  pull_requests:
+    scope: local
