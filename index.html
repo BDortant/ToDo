@@ -668,38 +668,6 @@ const StorageService = (() => {
 const App = (() => {
     let data = StorageService.load();
 
-    // Migrate old "priority" field to new dual-priority fields
-    let needsMigration = false;
-    data.todos.forEach(todo => {
-        if (todo.priority !== undefined && todo.overallPriority === undefined) {
-            todo.overallPriority = todo.priority;
-            delete todo.priority;
-            needsMigration = true;
-        }
-    });
-    if (needsMigration) StorageService.save(data);
-
-    // One-time fix: move done items to priority 0 (top of list)
-    if (!data._donePriorityFixed2) {
-        // Overall priority: done items get 0, open items keep their order starting at 1
-        const openItems = data.todos.filter(t => t.status !== 'Done').sort((a, b) => (a.overallPriority || 999) - (b.overallPriority || 999));
-        const doneItems = data.todos.filter(t => t.status === 'Done');
-        doneItems.forEach(t => { t.overallPriority = 0; });
-        openItems.forEach((t, i) => { t.overallPriority = i + 1; });
-
-        // Project priority: same per project
-        const projects = [...new Set(data.todos.map(t => t.projectId).filter(Boolean))];
-        for (const pid of projects) {
-            const open = data.todos.filter(t => t.projectId === pid && t.status !== 'Done').sort((a, b) => (a.projectPriority || 999) - (b.projectPriority || 999));
-            const done = data.todos.filter(t => t.projectId === pid && t.status === 'Done');
-            done.forEach(t => { t.projectPriority = 0; });
-            open.forEach((t, i) => { t.projectPriority = i + 1; });
-        }
-
-        data._donePriorityFixed2 = true;
-        StorageService.save(data);
-    }
-
     let currentView = 'all';           // 'all' or 'by-project'
     let selectedProjectId = null;      // filter in sidebar
     let editingTodoTags = [];          // temp tags for the form
