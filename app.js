@@ -216,31 +216,32 @@ const App = (() => {
             </tr></thead><tbody>`;
 
         for (const todo of todos) {
+            const safeId = escapeAttr(todo.id);
             const rowClass = todo.status === 'Done' ? 'done' : (todo.status === 'Cancelled' ? 'cancelled' : '');
             // Status inline select
-            const statusSelect = `<select class="inline-select" onchange="App.inlineUpdate('${todo.id}', 'status', this.value)">
+            const statusSelect = `<select class="inline-select" onchange="App.inlineUpdate(this.closest('tr').dataset.id, 'status', this.value)">
                 ${statusOptions.map(s => `<option value="${s}" ${todo.status === s ? 'selected' : ''}>${s}</option>`).join('')}
             </select>`;
 
             // Effort inline select
-            const effortSelect = `<select class="inline-select" onchange="App.inlineUpdate('${todo.id}', 'effort', this.value)">
+            const effortSelect = `<select class="inline-select" onchange="App.inlineUpdate(this.closest('tr').dataset.id, 'effort', this.value)">
                 ${effortOptions.map(e => `<option value="${e}" ${todo.effort === e ? 'selected' : ''}>${e ? e.charAt(0).toUpperCase() + e.slice(1) : '—'}</option>`).join('')}
             </select>`;
 
             // Deadline inline input
-            const deadlineInput = `<input type="date" class="inline-input" value="${todo.deadline || ''}" onchange="App.inlineUpdate('${todo.id}', 'deadline', this.value)" style="width:130px">`;
+            const deadlineInput = `<input type="date" class="inline-input" value="${todo.deadline || ''}" onchange="App.inlineUpdate(this.closest('tr').dataset.id, 'deadline', this.value)" style="width:130px">`;
 
             // Assignee inline input
-            const assigneeInput = `<input type="text" class="inline-input" value="${escapeAttr(todo.assignee)}" placeholder="—" onblur="App.inlineUpdate('${todo.id}', 'assignee', this.value)" onkeydown="if(event.key==='Enter'){this.blur()}" style="width:100px">`;
+            const assigneeInput = `<input type="text" class="inline-input" value="${escapeAttr(todo.assignee)}" placeholder="—" onblur="App.inlineUpdate(this.closest('tr').dataset.id, 'assignee', this.value)" onkeydown="if(event.key==='Enter'){this.blur()}" style="width:100px">`;
 
             html += `<tr class="${rowClass}" draggable="true"
-                data-id="${todo.id}"
+                data-id="${safeId}"
                 ondragstart="App.onDragStart(event)"
                 ondragover="App.onDragOver(event)"
                 ondragleave="App.onDragLeave(event)"
                 ondrop="App.onDrop(event)"
                 ondragend="App.onDragEnd(event)">
-                <td><input type="checkbox" ${todo.status === 'Done' ? 'checked' : ''} onchange="App.toggleDone('${todo.id}')" title="Mark as done"></td>
+                <td><input type="checkbox" ${todo.status === 'Done' ? 'checked' : ''} onchange="App.toggleDone(this.closest('tr').dataset.id)" title="Mark as done"></td>
                 <td style="color:#aaa">${todo.overallPriority || '—'}</td>
                 <td style="color:#aaa">${todo.projectPriority || '—'}</td>
                 <td><strong>${escapeHTML(todo.title)}</strong></td>
@@ -249,11 +250,11 @@ const App = (() => {
                 <td>${effortSelect}</td>
                 <td>${deadlineInput}</td>
                 <td>${assigneeInput}</td>
-                <td class="notes-cell clickable-cell" tabindex="0" onclick="App.editNotes(this, '${todo.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();App.editNotes(this,'${todo.id}')}">${todo.notes ? escapeHTML(todo.notes) : '—'}</td>
+                <td class="notes-cell clickable-cell" tabindex="0" onclick="App.editNotes(this, this.closest('tr').dataset.id)" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();App.editNotes(this,this.closest('tr').dataset.id)}">${todo.notes ? escapeHTML(todo.notes) : '—'}</td>
                 <td>${(todo.tags || []).map(t => `<span class="tag">${escapeHTML(t)}</span>`).join(' ')}</td>
                 <td>
-                    <button class="btn-icon" onclick="App.openTodoModal('${todo.id}')" title="Edit">✏️</button>
-                    <button class="btn-icon" onclick="App.deleteTodo('${todo.id}')" title="Delete">🗑️</button>
+                    <button class="btn-icon" onclick="App.openTodoModal(this.closest('tr').dataset.id)" title="Edit">✏️</button>
+                    <button class="btn-icon" onclick="App.deleteTodo(this.closest('tr').dataset.id)" title="Delete">🗑️</button>
                 </td>
             </tr>`;
         }
@@ -269,11 +270,12 @@ const App = (() => {
         projectList.innerHTML = data.projects.map(p => {
             const count = data.todos.filter(t => t.projectId === p.id).length;
             const active = selectedProjectId === p.id ? 'active' : '';
-            return `<li class="project-item ${active}" onclick="App.selectProject('${p.id}')">
+            const safePid = escapeAttr(p.id);
+            return `<li class="project-item ${active}" data-id="${safePid}" onclick="App.selectProject(this.dataset.id)">
                 <span>${escapeHTML(p.name)} <span class="project-count">${count}</span></span>
                 <span class="project-item-actions">
-                    <button class="btn-icon" onclick="event.stopPropagation(); App.openProjectModal('${p.id}')" title="Rename">✏️</button>
-                    <button class="btn-icon" onclick="event.stopPropagation(); App.deleteProject('${p.id}')" title="Delete">🗑️</button>
+                    <button class="btn-icon" onclick="event.stopPropagation(); App.openProjectModal(this.closest('li').dataset.id)" title="Rename">✏️</button>
+                    <button class="btn-icon" onclick="event.stopPropagation(); App.deleteProject(this.closest('li').dataset.id)" title="Delete">🗑️</button>
                 </span>
             </li>`;
         }).join('');
