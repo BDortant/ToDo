@@ -142,6 +142,8 @@ body {
 }
 
 .btn:hover { opacity: 0.85; }
+.btn:focus { outline: 2px solid #4361ee; outline-offset: 2px; }
+.btn:focus:not(:focus-visible) { outline: none; }
 
 .btn-primary { background: #4361ee; color: #fff; }
 .btn-secondary { background: #e0e0e0; color: #333; }
@@ -160,6 +162,8 @@ body {
     border-radius: 4px;
 }
 .btn-icon:hover { background: #e0e0e0; color: #333; }
+.btn-icon:focus { outline: 2px solid #4361ee; outline-offset: 1px; }
+.btn-icon:focus:not(:focus-visible) { outline: none; }
 
 /* ===== Todo Table ===== */
 .todo-table {
@@ -420,4 +424,13 @@ body {
 
 .clickable-cell:hover {
     background: #e8eaf6;
+}
+
+.clickable-cell:focus {
+    outline: 2px solid #4361ee;
+    outline-offset: 1px;
+}
+
+.clickable-cell:focus:not(:focus-visible) {
+    outline: none;
 }
