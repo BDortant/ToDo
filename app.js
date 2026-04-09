@@ -280,9 +280,10 @@ const App = (() => {
             </li>`;
         }).join('');
 
-        // View toggle
+        // View toggle — "All Items" is only active when no project is selected
         document.querySelectorAll('#view-toggle li').forEach(li => {
-            li.classList.toggle('active', li.dataset.view === currentView);
+            const isActive = li.dataset.view === currentView && !(li.dataset.view === 'all' && selectedProjectId);
+            li.classList.toggle('active', isActive);
         });
 
         // Main title
@@ -334,7 +335,7 @@ const App = (() => {
     // --- Views ---
     function setView(view) {
         currentView = view;
-        if (view === 'by-project') selectedProjectId = null;
+        selectedProjectId = null;
         render();
     }
 
