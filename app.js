@@ -228,8 +228,9 @@ const App = (() => {
                 ${effortOptions.map(e => `<option value="${e}" ${todo.effort === e ? 'selected' : ''}>${e ? e.charAt(0).toUpperCase() + e.slice(1) : '—'}</option>`).join('')}
             </select>`;
 
-            // Deadline inline input
-            const deadlineInput = `<input type="date" class="inline-input" value="${todo.deadline || ''}" onchange="App.inlineUpdate(this.closest('tr').dataset.id, 'deadline', this.value)" style="width:130px">`;
+            // Deadline inline input — highlight red if overdue and not done
+            const isOverdue = todo.deadline && todo.status !== 'Done' && todo.status !== 'Cancelled' && todo.deadline < new Date().toISOString().split('T')[0];
+            const deadlineInput = `<input type="date" class="inline-input ${isOverdue ? 'overdue' : ''}" value="${todo.deadline || ''}" onchange="App.inlineUpdate(this.closest('tr').dataset.id, 'deadline', this.value)" style="width:130px">`;
 
             // Assignee inline input
             const assigneeInput = `<input type="text" class="inline-input" value="${escapeAttr(todo.assignee)}" placeholder="—" onblur="App.inlineUpdate(this.closest('tr').dataset.id, 'assignee', this.value)" onkeydown="if(event.key==='Enter'){this.blur()}" style="width:100px">`;
@@ -505,6 +506,9 @@ const App = (() => {
             });
 
             const newTodo = data.todos[data.todos.length - 1];
+            if (newTodo.isRecurring && !newTodo.deadline && newTodo.recurringDays.length > 0) {
+                newTodo.deadline = getNextMatchingDay(newTodo.recurringDays);
+            }
             if (newStatus === 'Done' && newTodo.isRecurring) {
                 spawnNextRecurrence(newTodo);
             }
@@ -549,27 +553,43 @@ const App = (() => {
         document.getElementById('recurring-section').classList.toggle('open', isRecurring);
     }
 
+    function getNextMatchingDay(recurringDays) {
+        const jsDayMap = [1, 2, 3, 4, 5, 6, 0]; // our 0=Mon..6=Sun -> JS getDay()
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        for (let i = 0; i < 7; i++) {
+            const candidate = new Date(today);
+            candidate.setDate(candidate.getDate() + i);
+            if (recurringDays.some(d => jsDayMap[d] === candidate.getDay())) {
+                return candidate.toISOString().split('T')[0];
+            }
+        }
+        return '';
+    }
+
     function spawnNextRecurrence(todo) {
         if (!todo.isRecurring || !todo.recurringDays || todo.recurringDays.length === 0) return;
 
         let newDeadline = '';
+        // recurringDays uses 0=Mon..6=Sun; JS getDay() uses 0=Sun..6=Sat
+        const jsDayMap = [1, 2, 3, 4, 5, 6, 0]; // our day index -> JS getDay()
+
         if (todo.deadline) {
+            // Advance from the previous deadline by X weeks, then find next matching day
             const base = new Date(todo.deadline + 'T00:00:00');
             const target = new Date(base);
             target.setDate(target.getDate() + todo.recurringWeeks * 7);
 
-            // Find the next matching day on or after the target date
-            // recurringDays uses 0=Mon..6=Sun; JS getDay() uses 0=Sun..6=Sat
-            const jsDayMap = [1, 2, 3, 4, 5, 6, 0]; // our day index -> JS getDay()
             for (let i = 0; i < 7; i++) {
                 const candidate = new Date(target);
                 candidate.setDate(candidate.getDate() + i);
-                const jsDay = candidate.getDay();
-                if (todo.recurringDays.some(d => jsDayMap[d] === jsDay)) {
+                if (todo.recurringDays.some(d => jsDayMap[d] === candidate.getDay())) {
                     newDeadline = candidate.toISOString().split('T')[0];
                     break;
                 }
             }
+        } else {
+            newDeadline = getNextMatchingDay(todo.recurringDays);
         }
 
         data.todos.push({

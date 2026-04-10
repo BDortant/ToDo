@@ -488,6 +488,13 @@ body {
     width: 100%;
 }
 
+.inline-input.overdue {
+    color: #d32f2f;
+    border-color: #d32f2f;
+    background: #fff5f5;
+    font-weight: 600;
+}
+
 .clickable-cell {
     cursor: pointer;
     border-radius: 4px;
