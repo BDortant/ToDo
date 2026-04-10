@@ -425,6 +425,7 @@ const App = (() => {
             document.getElementById('todo-assignee').value = todo.assignee || '';
             document.getElementById('todo-notes').value = todo.notes || '';
             editingTodoTags = [...(todo.tags || [])];
+            setRecurringFormValues(todo);
         } else {
             titleEl.textContent = 'New To-Do';
             document.getElementById('todo-id').value = '';
@@ -436,6 +437,7 @@ const App = (() => {
             document.getElementById('todo-assignee').value = '';
             document.getElementById('todo-notes').value = '';
             editingTodoTags = [];
+            setRecurringFormValues({ isRecurring: false, recurringWeeks: 1, recurringDays: [] });
         }
 
         renderTags();
@@ -472,9 +474,15 @@ const App = (() => {
             todo.notes = document.getElementById('todo-notes').value;
             todo.tags = [...editingTodoTags];
 
+            const recurring = getRecurringFormValues();
+            todo.isRecurring = recurring.isRecurring;
+            todo.recurringWeeks = recurring.recurringWeeks;
+            todo.recurringDays = recurring.recurringDays;
+
             // Auto-set completedDate when status changes to Done
             if (newStatus === 'Done' && oldStatus !== 'Done') {
                 todo.completedDate = new Date().toISOString();
+                if (todo.isRecurring) spawnNextRecurrence(todo);
             } else if (newStatus !== 'Done') {
                 todo.completedDate = null;
             }
@@ -492,8 +500,14 @@ const App = (() => {
                 notes: document.getElementById('todo-notes').value,
                 tags: [...editingTodoTags],
                 createdDate: new Date().toISOString(),
-                completedDate: newStatus === 'Done' ? new Date().toISOString() : null
+                completedDate: newStatus === 'Done' ? new Date().toISOString() : null,
+                ...getRecurringFormValues()
             });
+
+            const newTodo = data.todos[data.todos.length - 1];
+            if (newStatus === 'Done' && newTodo.isRecurring) {
+                spawnNextRecurrence(newTodo);
+            }
         }
 
         persist();
@@ -508,6 +522,76 @@ const App = (() => {
         data.todos = data.todos.filter(t => t.id !== id);
         persist();
         render();
+    }
+
+    function toggleRecurring() {
+        const checked = document.getElementById('todo-recurring').checked;
+        document.getElementById('recurring-section').classList.toggle('open', checked);
+    }
+
+    function getRecurringFormValues() {
+        const isRecurring = document.getElementById('todo-recurring').checked;
+        const recurringWeeks = parseInt(document.getElementById('recurring-weeks').value, 10) || 1;
+        const recurringDays = [];
+        document.querySelectorAll('#recurring-days input:checked').forEach(cb => {
+            recurringDays.push(parseInt(cb.value, 10));
+        });
+        return { isRecurring, recurringWeeks, recurringDays };
+    }
+
+    function setRecurringFormValues(todo) {
+        const isRecurring = todo.isRecurring || false;
+        document.getElementById('todo-recurring').checked = isRecurring;
+        document.getElementById('recurring-weeks').value = todo.recurringWeeks || 1;
+        document.querySelectorAll('#recurring-days input').forEach(cb => {
+            cb.checked = (todo.recurringDays || []).includes(parseInt(cb.value, 10));
+        });
+        document.getElementById('recurring-section').classList.toggle('open', isRecurring);
+    }
+
+    function spawnNextRecurrence(todo) {
+        if (!todo.isRecurring || !todo.recurringDays || todo.recurringDays.length === 0) return;
+
+        let newDeadline = '';
+        if (todo.deadline) {
+            const base = new Date(todo.deadline + 'T00:00:00');
+            const target = new Date(base);
+            target.setDate(target.getDate() + todo.recurringWeeks * 7);
+
+            // Find the next matching day on or after the target date
+            // recurringDays uses 0=Mon..6=Sun; JS getDay() uses 0=Sun..6=Sat
+            const jsDayMap = [1, 2, 3, 4, 5, 6, 0]; // our day index -> JS getDay()
+            for (let i = 0; i < 7; i++) {
+                const candidate = new Date(target);
+                candidate.setDate(candidate.getDate() + i);
+                const jsDay = candidate.getDay();
+                if (todo.recurringDays.some(d => jsDayMap[d] === jsDay)) {
+                    newDeadline = candidate.toISOString().split('T')[0];
+                    break;
+                }
+            }
+        }
+
+        data.todos.push({
+            id: generateId(),
+            title: todo.title,
+            projectId: todo.projectId,
+            status: 'To Do',
+            overallPriority: data.todos.length + 1,
+            projectPriority: data.todos.filter(t => t.projectId === todo.projectId).length + 1,
+            effort: todo.effort,
+            deadline: newDeadline,
+            assignee: todo.assignee,
+            notes: todo.notes,
+            tags: [...(todo.tags || [])],
+            createdDate: new Date().toISOString(),
+            completedDate: null,
+            isRecurring: true,
+            recurringWeeks: todo.recurringWeeks,
+            recurringDays: [...todo.recurringDays]
+        });
+
+        persist();
     }
 
     function toggleFilter(which) {
@@ -534,6 +618,7 @@ const App = (() => {
             if (value === 'Done' && oldStatus !== 'Done') {
                 todo.previousStatus = oldStatus;
                 todo.completedDate = new Date().toISOString();
+                if (todo.isRecurring) spawnNextRecurrence(todo);
                 movePriorityForDone(todo, true);
             } else if (value !== 'Done' && oldStatus === 'Done') {
                 todo.completedDate = null;
@@ -871,6 +956,7 @@ const App = (() => {
         closeTodoModal,
         saveTodo,
         deleteTodo,
+        toggleRecurring,
         toggleDone,
         toggleFilter,
         inlineUpdate,

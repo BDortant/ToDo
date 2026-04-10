@@ -96,6 +96,29 @@
                 <input type="text" id="todo-title" required>
             </div>
 
+            <div class="form-group">
+                <label class="recurring-toggle">
+                    <input type="checkbox" id="todo-recurring" onchange="App.toggleRecurring()">
+                    Recurring
+                </label>
+                <div class="recurring-section" id="recurring-section">
+                    <div class="recurring-interval">
+                        <span>Every</span>
+                        <input type="number" id="recurring-weeks" min="1" value="1">
+                        <span>week(s)</span>
+                    </div>
+                    <div class="recurring-days" id="recurring-days">
+                        <label><input type="checkbox" value="0"> Mon</label>
+                        <label><input type="checkbox" value="1"> Tue</label>
+                        <label><input type="checkbox" value="2"> Wed</label>
+                        <label><input type="checkbox" value="3"> Thu</label>
+                        <label><input type="checkbox" value="4"> Fri</label>
+                        <label><input type="checkbox" value="5"> Sat</label>
+                        <label><input type="checkbox" value="6"> Sun</label>
+                    </div>
+                </div>
+            </div>
+
             <div class="form-row">
                 <div class="form-group">
                     <label>Project</label>
