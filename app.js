@@ -229,8 +229,14 @@ const App = (() => {
             </select>`;
 
             // Deadline inline input — highlight red if overdue and not done
-            const isOverdue = todo.deadline && todo.status !== 'Done' && todo.status !== 'Cancelled' && todo.deadline < new Date().toISOString().split('T')[0];
-            const deadlineInput = `<input type="date" class="inline-input ${isOverdue ? 'overdue' : ''}" value="${todo.deadline || ''}" onchange="App.inlineUpdate(this.closest('tr').dataset.id, 'deadline', this.value)" style="width:130px">`;
+            let isOverdue = false;
+            if (todo.deadline && todo.status !== 'Done' && todo.status !== 'Cancelled') {
+                const deadlineDate = new Date(todo.deadline + 'T00:00:00');
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+                isOverdue = deadlineDate.getTime() < today.getTime();
+            }
+            const deadlineInput = `<input type="date" class="inline-input ${isOverdue ? 'overdue' : ''}" value="${escapeAttr(todo.deadline || '')}" onchange="App.inlineUpdate(this.closest('tr').dataset.id, 'deadline', this.value)" style="width:130px">`;
 
             // Assignee inline input
             const assigneeInput = `<input type="text" class="inline-input" value="${escapeAttr(todo.assignee)}" placeholder="—" onblur="App.inlineUpdate(this.closest('tr').dataset.id, 'assignee', this.value)" onkeydown="if(event.key==='Enter'){this.blur()}" style="width:100px">`;
@@ -535,10 +541,12 @@ const App = (() => {
 
     function getRecurringFormValues() {
         const isRecurring = document.getElementById('todo-recurring').checked;
-        const recurringWeeks = parseInt(document.getElementById('recurring-weeks').value, 10) || 1;
+        const rawWeeks = parseInt(document.getElementById('recurring-weeks').value, 10);
+        const recurringWeeks = (isNaN(rawWeeks) || rawWeeks < 1) ? 1 : Math.min(rawWeeks, 52);
         const recurringDays = [];
         document.querySelectorAll('#recurring-days input:checked').forEach(cb => {
-            recurringDays.push(parseInt(cb.value, 10));
+            const day = parseInt(cb.value, 10);
+            if (!isNaN(day) && day >= 0 && day <= 6) recurringDays.push(day);
         });
         return { isRecurring, recurringWeeks, recurringDays };
     }
