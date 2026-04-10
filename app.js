@@ -610,8 +610,6 @@ const App = (() => {
             recurringWeeks: todo.recurringWeeks,
             recurringDays: [...todo.recurringDays]
         });
-
-        persist();
     }
 
     function toggleFilter(which) {
@@ -731,6 +729,7 @@ const App = (() => {
             todo.previousStatus = todo.status;
             todo.status = 'Done';
             todo.completedDate = new Date().toISOString();
+            if (todo.isRecurring) spawnNextRecurrence(todo);
             movePriorityForDone(todo, true);
         }
 
