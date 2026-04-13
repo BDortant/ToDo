@@ -487,10 +487,6 @@ const App = (() => {
             todo.recurringWeeks = recurring.recurringWeeks;
             todo.recurringDays = recurring.recurringDays;
 
-            if (todo.isRecurring && !todo.deadline && todo.recurringDays.length > 0) {
-                todo.deadline = getNextMatchingDay(todo.recurringDays);
-            }
-
             // Auto-set completedDate when status changes to Done
             if (newStatus === 'Done' && oldStatus !== 'Done') {
                 todo.completedDate = new Date().toISOString();
@@ -517,9 +513,6 @@ const App = (() => {
             });
 
             const newTodo = data.todos[data.todos.length - 1];
-            if (newTodo.isRecurring && !newTodo.deadline && newTodo.recurringDays.length > 0) {
-                newTodo.deadline = getNextMatchingDay(newTodo.recurringDays);
-            }
             if (newStatus === 'Done' && newTodo.isRecurring) {
                 spawnNextRecurrence(newTodo);
             }
@@ -589,6 +582,11 @@ const App = (() => {
 
     function spawnNextRecurrence(todo) {
         if (!todo.isRecurring || !todo.recurringDays || todo.recurringDays.length === 0) return;
+
+        // Normalize: ensure recurring todo has a deadline before advancing
+        if (!todo.deadline) {
+            todo.deadline = getNextMatchingDay(todo.recurringDays);
+        }
 
         let newDeadline = '';
         // recurringDays uses 0=Mon..6=Sun; JS getDay() uses 0=Sun..6=Sat
