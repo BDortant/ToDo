@@ -487,6 +487,10 @@ const App = (() => {
             todo.recurringWeeks = recurring.recurringWeeks;
             todo.recurringDays = recurring.recurringDays;
 
+            if (todo.isRecurring && !todo.deadline && todo.recurringDays.length > 0) {
+                todo.deadline = getNextMatchingDay(todo.recurringDays);
+            }
+
             // Auto-set completedDate when status changes to Done
             if (newStatus === 'Done' && oldStatus !== 'Done') {
                 todo.completedDate = new Date().toISOString();
@@ -562,6 +566,13 @@ const App = (() => {
         document.getElementById('recurring-section').classList.toggle('open', isRecurring);
     }
 
+    function toLocalDateString(date) {
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+    }
+
     function getNextMatchingDay(recurringDays) {
         const jsDayMap = [1, 2, 3, 4, 5, 6, 0]; // our 0=Mon..6=Sun -> JS getDay()
         const today = new Date();
@@ -570,7 +581,7 @@ const App = (() => {
             const candidate = new Date(today);
             candidate.setDate(candidate.getDate() + i);
             if (recurringDays.some(d => jsDayMap[d] === candidate.getDay())) {
-                return candidate.toISOString().split('T')[0];
+                return toLocalDateString(candidate);
             }
         }
         return '';
@@ -593,7 +604,7 @@ const App = (() => {
                 const candidate = new Date(target);
                 candidate.setDate(candidate.getDate() + i);
                 if (todo.recurringDays.some(d => jsDayMap[d] === candidate.getDay())) {
-                    newDeadline = candidate.toISOString().split('T')[0];
+                    newDeadline = toLocalDateString(candidate);
                     break;
                 }
             }
