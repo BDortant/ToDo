@@ -589,23 +589,25 @@ const App = (() => {
         }
 
         let newDeadline = '';
-        // recurringDays uses 0=Mon..6=Sun; JS getDay() uses 0=Sun..6=Sat
-        const jsDayMap = [1, 2, 3, 4, 5, 6, 0]; // our day index -> JS getDay()
 
         if (todo.deadline) {
-            // Advance from the previous deadline by X weeks, then find next matching day
             const base = new Date(todo.deadline + 'T00:00:00');
-            const target = new Date(base);
-            target.setDate(target.getDate() + todo.recurringWeeks * 7);
+            // Convert JS getDay() (0=Sun..6=Sat) into app's day index (0=Mon..6=Sun)
+            const baseAppDow = (base.getDay() + 6) % 7;
+            // Guard against malformed stored values (0, undefined) that would land in the past
+            const weeks = Number.isInteger(todo.recurringWeeks) && todo.recurringWeeks > 0 ? todo.recurringWeeks : 1;
+            const sortedDays = [...todo.recurringDays].sort((a, b) => a - b);
+            const nextInWeek = sortedDays.find(d => d > baseAppDow);
 
-            for (let i = 0; i < 7; i++) {
-                const candidate = new Date(target);
-                candidate.setDate(candidate.getDate() + i);
-                if (todo.recurringDays.some(d => jsDayMap[d] === candidate.getDay())) {
-                    newDeadline = toLocalDateString(candidate);
-                    break;
-                }
+            const candidate = new Date(base);
+            if (nextInWeek !== undefined) {
+                candidate.setDate(candidate.getDate() + (nextInWeek - baseAppDow));
+            } else {
+                // No more selected days this week — jump to the first selected day N weeks ahead
+                const offset = -baseAppDow + weeks * 7 + sortedDays[0];
+                candidate.setDate(candidate.getDate() + offset);
             }
+            newDeadline = toLocalDateString(candidate);
         } else {
             newDeadline = getNextMatchingDay(todo.recurringDays);
         }
