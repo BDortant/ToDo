@@ -594,6 +594,8 @@ const App = (() => {
             const base = new Date(todo.deadline + 'T00:00:00');
             // Convert JS getDay() (0=Sun..6=Sat) into app's day index (0=Mon..6=Sun)
             const baseAppDow = (base.getDay() + 6) % 7;
+            // Guard against malformed stored values (0, undefined) that would land in the past
+            const weeks = Number.isInteger(todo.recurringWeeks) && todo.recurringWeeks > 0 ? todo.recurringWeeks : 1;
             const sortedDays = [...todo.recurringDays].sort((a, b) => a - b);
             const nextInWeek = sortedDays.find(d => d > baseAppDow);
 
@@ -602,7 +604,7 @@ const App = (() => {
                 candidate.setDate(candidate.getDate() + (nextInWeek - baseAppDow));
             } else {
                 // No more selected days this week — jump to the first selected day N weeks ahead
-                const offset = -baseAppDow + todo.recurringWeeks * 7 + sortedDays[0];
+                const offset = -baseAppDow + weeks * 7 + sortedDays[0];
                 candidate.setDate(candidate.getDate() + offset);
             }
             newDeadline = toLocalDateString(candidate);
