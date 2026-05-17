@@ -339,15 +339,15 @@ docker compose up -d</pre>
         });
 
         // Per-column filters (applied AFTER global filters in getFilteredTodos).
-        // Each one is a substring match (case-insensitive) or exact for enums.
+        // Text columns: case-insensitive substring. Enum columns: exact match.
         const f = colFilters;
         if (f.title)    todos = todos.filter(t => (t.title || '').toLowerCase().includes(f.title.toLowerCase()));
-        if (f.project)  todos = todos.filter(t => getProjectName(t.projectId).toLowerCase().includes(f.project.toLowerCase()));
+        if (f.project)  todos = todos.filter(t => getProjectName(t.projectId) === f.project);
         if (f.status)   todos = todos.filter(t => t.status === f.status);
         if (f.effort)   todos = todos.filter(t => (t.effort || '') === f.effort);
         if (f.deadline) todos = todos.filter(t => (t.deadline || '').includes(f.deadline));
         if (f.assignee) todos = todos.filter(t => (t.assignee || '').toLowerCase().includes(f.assignee.toLowerCase()));
-        if (f.tags)     todos = todos.filter(t => (t.tags || []).some(tag => tag.toLowerCase().includes(f.tags.toLowerCase())));
+        if (f.tags)     todos = todos.filter(t => (t.tags || []).includes(f.tags));
 
         if (todos.length === 0) {
             return '<div class="empty-state"><p>No matching to-do items. Try clearing filters, or click "+ New To-Do".</p></div>';
@@ -366,14 +366,22 @@ docker compose up -d</pre>
         const th = (key, label, attrs = '') =>
             `<th class="sortable" ${attrs} onclick="App.sortBy('${key}')">${label} ${sortIndicator(key)}</th>`;
 
-        // Filter cells. Text input or enum dropdown.
+        // Filter cells. `data-filter-key` lets the focus-preservation helper
+        // re-attach focus to the same input after each render.
         const tfText = (key, placeholder = '') =>
-            `<th><input type="text" class="col-filter" value="${escapeAttr(colFilters[key])}" placeholder="${escapeAttr(placeholder)}" oninput="App.setColFilter('${key}', this.value)"></th>`;
-        const tfEnum = (key, options) =>
-            `<th><select class="col-filter" onchange="App.setColFilter('${key}', this.value)">
+            `<th><input type="text" class="col-filter" data-filter-key="${key}" value="${escapeAttr(colFilters[key])}" placeholder="${escapeAttr(placeholder)}" oninput="App.setColFilter('${key}', this.value)"></th>`;
+        const tfEnum = (key, options, labelFor) =>
+            `<th><select class="col-filter" data-filter-key="${key}" onchange="App.setColFilter('${key}', this.value)">
                 <option value="">all</option>
-                ${options.map(o => `<option value="${escapeAttr(o)}" ${colFilters[key] === o ? 'selected' : ''}>${escapeAttr(o || '—')}</option>`).join('')}
+                ${options.map(o => `<option value="${escapeAttr(o)}" ${colFilters[key] === o ? 'selected' : ''}>${escapeAttr(labelFor ? labelFor(o) : (o || '—'))}</option>`).join('')}
             </select></th>`;
+
+        // Collect distinct values for enum-style filters. Sorted for stable
+        // dropdown order — alphabetical for projects/tags, predefined for status/effort.
+        const distinctTags = [...new Set(data.todos.flatMap(t => t.tags || []))].sort((a, b) => a.localeCompare(b));
+        const distinctProjects = data.projects.slice().sort((a, b) => a.name.localeCompare(b.name));
+        // Use project names as values so the filter logic stays string-based.
+        const projectFilterOptions = distinctProjects.map(p => p.name);
 
         let html = `<table class="todo-table">
             <thead>
@@ -396,13 +404,13 @@ docker compose up -d</pre>
                     <th></th>
                     <th></th>
                     ${tfText('title', 'filter…')}
-                    ${showProject ? tfText('project', 'filter…') : ''}
+                    ${showProject ? tfEnum('project', projectFilterOptions) : ''}
                     ${tfEnum('status', statusOptions)}
                     ${tfEnum('effort', effortOptions)}
                     ${tfText('deadline', 'YYYY-MM')}
                     ${tfText('assignee', 'filter…')}
                     <th></th>
-                    ${tfText('tags', 'tag…')}
+                    ${tfEnum('tags', distinctTags)}
                     <th></th>
                 </tr>
             </thead><tbody>`;
@@ -515,7 +523,35 @@ docker compose up -d</pre>
 
     function setColFilter(key, value) {
         colFilters[key] = value;
-        render();
+        // render() rebuilds the entire table including the filter inputs.
+        // Without focus-preservation the input gets destroyed-and-recreated
+        // on every keystroke, kicking the user out after typing one char.
+        withPreservedFilterFocus(() => render());
+    }
+
+    // Save the currently-focused filter input, run a render, then restore
+    // focus + cursor position on the freshly-rendered input. Identified by
+    // the `data-filter-key` attribute we set on each filter input.
+    function withPreservedFilterFocus(renderFn) {
+        const ae = document.activeElement;
+        const isFilterInput = !!(ae && ae.dataset && ae.dataset.filterKey);
+        let savedKey = null, savedStart = null, savedEnd = null;
+        if (isFilterInput) {
+            savedKey = ae.dataset.filterKey;
+            try { savedStart = ae.selectionStart; savedEnd = ae.selectionEnd; } catch {}
+        }
+        renderFn();
+        if (savedKey) {
+            const next = document.querySelector(`[data-filter-key="${savedKey}"]`);
+            if (next) {
+                next.focus();
+                try {
+                    if (next.type === 'text' && savedStart !== null) {
+                        next.setSelectionRange(savedStart, savedEnd);
+                    }
+                } catch {}
+            }
+        }
     }
 
     async function snoozeTodo(id) {
