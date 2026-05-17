@@ -6,6 +6,7 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'node:path';
+import fs from 'node:fs';
 import {
     initDb,
     getState,
@@ -113,11 +114,28 @@ app.use((err, _req, res, _next) => {
 
 // --- Static frontend -------------------------------------------
 //
-// Mounted LAST so /api/* always wins. The Dockerfile mounts the
-// repo root at /app/public so index.html, app.js and style.css
-// are served directly without copying.
+// Explicit allowlist of frontend files. We intentionally do NOT
+// use express.static on the repo root because the repo also
+// contains backend source, SQLite data, and the .git dir — any
+// of which would be a privacy / source-leak if served. Adding a
+// new frontend file? Add an entry to FRONTEND_FILES below.
 
-app.use(express.static(PUBLIC_DIR, { index: 'index.html' }));
+const FRONTEND_FILES = {
+    '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
+    '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
+    '/app.js': { file: 'app.js', type: 'application/javascript; charset=utf-8' },
+    '/style.css': { file: 'style.css', type: 'text/css; charset=utf-8' }
+};
+
+for (const [route, { file, type }] of Object.entries(FRONTEND_FILES)) {
+    app.get(route, (_req, res) => {
+        const full = path.join(PUBLIC_DIR, file);
+        fs.readFile(full, (err, buf) => {
+            if (err) return res.status(404).type('text/plain').send('Not found');
+            res.type(type).send(buf);
+        });
+    });
+}
 
 // --- Boot -------------------------------------------------------
 

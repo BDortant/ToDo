@@ -147,7 +147,9 @@ export function patchProject(id, patch) {
     const existing = getProject(id);
     if (!existing) throw new HttpError(404, 'Project not found');
     if (patch.name != null) {
-        db.prepare('UPDATE projects SET name = ? WHERE id = ?').run(String(patch.name).trim(), id);
+        const trimmed = String(patch.name).trim();
+        if (!trimmed) throw new HttpError(400, 'Project name cannot be empty');
+        db.prepare('UPDATE projects SET name = ? WHERE id = ?').run(trimmed, id);
     }
     return getProject(id);
 }
@@ -322,7 +324,16 @@ export function setTodoPriority(id, newPriority) {
     const existing = getTodo(id);
     if (!existing) throw new HttpError(404, 'Todo not found');
 
-    const target = Math.max(1, parseInt(newPriority, 10) || 1);
+    // Clamp the requested priority to the actual list bounds. Without
+    // this, callers passing a too-large N create sparse rank values
+    // (e.g. 1, 2, 999) and the contiguous-rank assumption breaks.
+    const totalCount = db.prepare('SELECT COUNT(*) AS c FROM todos').get().c;
+    const projectCount = existing.projectId
+        ? db.prepare("SELECT COUNT(*) AS c FROM todos WHERE project_id = ?").get(existing.projectId).c
+        : 0;
+    const rawN = parseInt(newPriority, 10);
+    const target = Math.max(1, Math.min(Number.isFinite(rawN) ? rawN : 1, Math.max(1, totalCount)));
+    const targetProject = Math.max(1, Math.min(Number.isFinite(rawN) ? rawN : 1, Math.max(1, projectCount)));
 
     const tx = db.transaction(() => {
         const oldOverall = existing.overallPriority;
@@ -344,22 +355,24 @@ export function setTodoPriority(id, newPriority) {
             db.prepare('UPDATE todos SET overall_priority = ? WHERE id = ?').run(target, id);
         }
 
-        // Mirror within the project too, if one is assigned
+        // Mirror within the project too, if one is assigned.
+        // Uses the project-specific clamp so a request like
+        // "priority=10" on a project with 3 todos lands at #3, not #10.
         if (existing.projectId) {
             const oldProject = existing.projectPriority;
-            if (target !== oldProject) {
-                if (target < oldProject) {
+            if (targetProject !== oldProject) {
+                if (targetProject < oldProject) {
                     db.prepare(`
                         UPDATE todos SET project_priority = project_priority + 1
                         WHERE id != ? AND project_id = ? AND project_priority >= ? AND project_priority < ?
-                    `).run(id, existing.projectId, target, oldProject);
+                    `).run(id, existing.projectId, targetProject, oldProject);
                 } else {
                     db.prepare(`
                         UPDATE todos SET project_priority = project_priority - 1
                         WHERE id != ? AND project_id = ? AND project_priority > ? AND project_priority <= ?
-                    `).run(id, existing.projectId, oldProject, target);
+                    `).run(id, existing.projectId, oldProject, targetProject);
                 }
-                db.prepare('UPDATE todos SET project_priority = ? WHERE id = ?').run(target, id);
+                db.prepare('UPDATE todos SET project_priority = ? WHERE id = ?').run(targetProject, id);
             }
         }
 

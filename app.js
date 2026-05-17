@@ -51,7 +51,9 @@ const StorageService = (() => {
     };
 })();
 
-// API status indicator — surfaces backend health in the header
+// API status indicator — surfaces backend health in the header.
+// Updates both the visual dot and the aria-live label so screen
+// readers announce the change too.
 const ApiStatus = (() => {
     let ok = true;
     function set(newOk) {
@@ -61,7 +63,13 @@ const ApiStatus = (() => {
         if (!el) return;
         el.classList.toggle('online', ok);
         el.classList.toggle('offline', !ok);
-        el.title = ok ? 'Backend online' : 'Backend unreachable — changes will fail until reconnected';
+        const onlineMsg = 'Backend online';
+        const offlineMsg = 'Backend unreachable — changes will fail until reconnected';
+        const msg = ok ? onlineMsg : offlineMsg;
+        el.title = msg;
+        el.setAttribute('aria-label', msg);
+        const label = document.getElementById('api-status-label');
+        if (label) label.textContent = msg;
     }
     return {
         markOk() { set(true); },
@@ -89,9 +97,44 @@ const App = (() => {
         try {
             data = await StorageService.loadAll();
             ApiStatus.markOk();
+            hideLoadError();
+            return true;
         } catch (e) {
             ApiStatus.markFail();
             console.error('Failed to load state:', e);
+            return false;
+        }
+    }
+
+    // Full-screen error overlay shown only on first-load failure.
+    // Without this, users would see an empty app and assume data is gone.
+    function showLoadError(err) {
+        const container = document.getElementById('main-content');
+        if (!container) return;
+        container.innerHTML = `
+            <div class="load-error">
+                <h2>Cannot reach the ToDo backend</h2>
+                <p>The app couldn't load your data from the API. Your data is safe — it's just unreachable right now.</p>
+                <p>Make sure the server is running:</p>
+                <pre>cd /workspace/zeroplex/ToDo
+docker compose up -d</pre>
+                <button class="btn btn-primary" onclick="App.retryInit()">Retry</button>
+                ${err ? `<details><summary>Error details</summary><pre>${(err.message || err) + ''}</pre></details>` : ''}
+            </div>
+        `;
+    }
+
+    function hideLoadError() {
+        const el = document.querySelector('.load-error');
+        if (el) el.remove();
+    }
+
+    async function retryInit() {
+        const ok = await reloadState();
+        if (ok) {
+            checkBackup();
+            render();
+            startPolling();
         }
     }
 
@@ -104,7 +147,8 @@ const App = (() => {
     function startPolling() {
         if (pollTimer) clearInterval(pollTimer);
         pollTimer = setInterval(async () => {
-            if (document.hidden) return; // pause when tab not visible
+            if (document.hidden) return;    // tab not visible
+            if (isUserBusy()) return;       // mid-edit or dragging — don't trample
             try {
                 const fresh = await StorageService.loadAll();
                 data = fresh;
@@ -114,6 +158,20 @@ const App = (() => {
                 ApiStatus.markFail();
             }
         }, POLL_MS);
+    }
+
+    // Returns true when re-rendering the table would destroy something
+    // the user is actively doing. Polling skips these ticks; the next
+    // tick (10s later) will pick up server changes naturally.
+    function isUserBusy() {
+        if (draggedRowId) return true;
+        const ae = document.activeElement;
+        if (!ae) return false;
+        if (ae.tagName === 'TEXTAREA') return true;
+        if (ae.tagName === 'INPUT' && ae.classList.contains('inline-input')) return true;
+        // Also pause while either modal is open
+        if (document.querySelector('.modal-backdrop.open')) return true;
+        return false;
     }
 
     function statusToBadgeClass(status) {
@@ -885,8 +943,13 @@ const App = (() => {
             }
         });
 
-        // Initial load from API
-        await reloadState();
+        // Initial load from API. On failure, show a clear error overlay
+        // instead of rendering an empty app (avoids "where did my data go?").
+        const ok = await reloadState();
+        if (!ok) {
+            showLoadError(new Error('Initial /api/state request failed'));
+            return; // Don't start polling — user will hit Retry
+        }
         checkBackup();
         render();
 
@@ -924,6 +987,7 @@ const App = (() => {
         cleanup,
         exportData,
         importData,
-        dismissBackupBanner
+        dismissBackupBanner,
+        retryInit
     };
 })();

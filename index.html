@@ -12,7 +12,9 @@
     <!-- Toolbar -->
     <header class="toolbar">
         <h1>ToDo</h1>
-        <span id="api-status" class="api-status online" title="Backend online"></span>
+        <span id="api-status" class="api-status online" role="status" aria-live="polite" title="Backend online">
+            <span class="visually-hidden" id="api-status-label">Backend online</span>
+        </span>
         <input type="file" id="import-file" accept=".json" style="display:none" onchange="App.importData(event)">
     </header>
 

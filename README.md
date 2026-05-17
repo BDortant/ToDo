@@ -20,21 +20,34 @@ docker compose up -d
 
 Then open <http://localhost:8084>.
 
-The first boot creates `data/todo.db` (SQLite, gitignored). All state lives there — wipe the file to reset.
+State lives in a Docker named volume (`todo_data`) — survives container restarts/rebuilds. Wipe with `docker compose down -v` if you want to reset.
+
+### Updating after a code change
+
+| What changed | What to run |
+|---|---|
+| Backend (`server/*`) | `docker compose up -d --build` |
+| Frontend (`index.html`, `app.js`, `style.css`) | `docker compose up -d --build` (frontend is baked into the image) |
+| Nothing, just restart | `docker compose restart` |
+
+### Backups
+
+- **In-app**: click **📥 Export** to download a JSON file. Click **📤 Import** to restore (replaces all current data).
+- **Programmatic**: `curl http://localhost:8084/api/export > backup-$(date +%F).json`
+- The SQLite file is not directly accessible from the host — it lives inside the named volume.
 
 ### Migrating from the old localStorage version
 
 1. In the old version, click **📥 Export** to download a backup JSON.
 2. In the new version, click **📤 Import** and upload that file.
 
-Import **replaces** all current data (you'll be asked to confirm).
-
 ## Tech Stack
 
 - **Frontend** — vanilla HTML/CSS/JS, no build step, single `index.html`/`app.js`/`style.css`
 - **Backend** — Node 20 + Express + better-sqlite3, single `server.js`
-- **Storage** — SQLite file at `data/todo.db`
+- **Storage** — SQLite inside the `todo_data` named Docker volume
 - **Transport** — same-origin REST under `/api/*`, served by the same Node process as the static frontend
+- **Hardening** — container runs as non-root `node` user; only the 3 frontend files (`index.html`, `app.js`, `style.css`) are served — backend source, DB, and `.git` are not exposed
 
 ## API
 
@@ -70,16 +83,15 @@ The frontend is a normal web page, so you can use any OS tool to pin it on top o
 
 ```text
 ToDo/
-├── index.html
+├── index.html          # baked into the Docker image at build time
 ├── app.js              # vanilla JS UI; StorageService talks to /api
 ├── style.css
 ├── server/
-│   ├── server.js       # Express app — /api routes + static frontend
+│   ├── server.js       # Express app — /api routes + 3 explicit frontend routes
 │   ├── db.js           # SQLite schema + all write logic (recurring, priority shift, cleanup)
 │   ├── package.json
-│   └── Dockerfile
-├── compose.yml         # binds 127.0.0.1:8084, mounts ./data and ./ (read-only)
-└── data/               # SQLite file lives here (gitignored)
+│   └── Dockerfile      # build context = repo root, runs as non-root `node` user
+└── compose.yml         # binds 127.0.0.1:8084, named volume `todo_data` for SQLite
 ```
 
 ## Project Structure Notes
