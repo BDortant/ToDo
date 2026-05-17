@@ -14,6 +14,31 @@ import crypto from 'node:crypto';
 
 let db;
 
+// ---------------------------------------------------------------
+// Priority model
+// ---------------------------------------------------------------
+// `overall_priority` and `project_priority` are integer ranks
+// that mean "position in the queue of work to do".
+//
+//   - Open items   -> contiguous 1..N (N = count of open todos)
+//   - Off-queue    -> 0 (Done and Cancelled — both treated as
+//                    "out of the queue", rendered as "—" in UI)
+//
+// After ANY mutation that could create a gap or duplicate,
+// `normalize()` is called inside the same transaction to put
+// the world back into the 1..N shape. This is the single
+// source of truth for priorities — every other priority code
+// path either prepares for normalize() or trusts that it ran.
+// ---------------------------------------------------------------
+
+const OFF_QUEUE_STATUSES = ['Done', 'Cancelled'];
+const OFF_QUEUE_SET = new Set(OFF_QUEUE_STATUSES);
+const OFF_QUEUE_SQL_LIST = OFF_QUEUE_STATUSES.map(s => `'${s}'`).join(', ');
+
+function isOffQueue(status) {
+    return OFF_QUEUE_SET.has(status);
+}
+
 export function initDb(dataDir) {
     fs.mkdirSync(dataDir, { recursive: true });
     const dbPath = path.join(dataDir, 'todo.db');
@@ -192,10 +217,13 @@ export function createTodo(input) {
 
     const status = input.status || TODO_DEFAULTS.status;
     const nowIso = new Date().toISOString();
+    const offQueue = isOffQueue(status);
 
     const id = input.id || generateId();
-    const overallPriority = nextOverallPriority();
-    const projectPriority = nextProjectPriority(projectId);
+    // Off-queue items are born outside the queue (priority 0). Open items
+    // go to the bottom of the queue. normalize() at the end keeps things tidy.
+    const overallPriority = offQueue ? 0 : nextOverallPriority();
+    const projectPriority = offQueue ? 0 : nextProjectPriority(projectId);
 
     const todo = {
         id,
@@ -210,7 +238,7 @@ export function createTodo(input) {
         notes: input.notes ?? TODO_DEFAULTS.notes,
         tags: Array.isArray(input.tags) ? input.tags : TODO_DEFAULTS.tags,
         createdDate: nowIso,
-        completedDate: status === 'Done' ? nowIso : null,
+        completedDate: offQueue ? nowIso : null,
         isRecurring: !!input.isRecurring,
         recurringWeeks: clampWeeks(input.recurringWeeks),
         recurringDays: normalizeDays(input.recurringDays)
@@ -218,8 +246,8 @@ export function createTodo(input) {
 
     const tx = db.transaction(() => {
         insertTodoRow(todo);
-        const spawned = (todo.status === 'Done' && todo.isRecurring) ? spawnNextRecurrence(todo) : null;
-        if (todo.status === 'Done') shiftPriorityForDone(todo, true);
+        const spawned = (offQueue && todo.isRecurring) ? spawnNextRecurrence(todo) : null;
+        normalize();
         return { todo: getTodo(todo.id), spawnedRecurrence: spawned ? getTodo(spawned.id) : null };
     });
 
@@ -233,7 +261,6 @@ export function patchTodo(id, patch) {
     const tx = db.transaction(() => {
         const updates = {};
         let projectChanged = false;
-        let newProjectPriority = existing.projectPriority;
 
         if (patch.title != null) updates.title = String(patch.title).trim();
         if (patch.effort !== undefined) updates.effort = patch.effort ?? '';
@@ -253,42 +280,89 @@ export function patchTodo(id, patch) {
                 throw new HttpError(400, `Unknown projectId: ${patch.projectId}`);
             }
             updates.project_id = patch.projectId || null;
-            // Put it at the end of the new project's list
-            newProjectPriority = nextProjectPriority(patch.projectId || '');
-            updates.project_priority = newProjectPriority;
+            // If item is open, place at bottom of the new project's queue;
+            // if off-queue, project priority stays 0. normalize() at the end
+            // re-ranks everything contiguously either way.
+            updates.project_priority = isOffQueue(existing.status)
+                ? 0
+                : nextProjectPriority(patch.projectId || '');
             projectChanged = true;
         }
 
-        // Status handling — auto completedDate + recurring spawn + priority shift
+        // ----- Status handling --------------------------------------------------
+        // Three relevant transitions:
+        //   1. open  -> open      : no priority change
+        //   2. open  -> off-queue : becameOffQueue — leave the queue
+        //                          (save previous priorities, set both to 0)
+        //                          + spawn recurrence if recurring
+        //   3. off-queue -> open  : leftOffQueue — rejoin at previous slot
+        //                          (clamp to current open-count, shift others
+        //                           to make room)
+        // After all branches, normalize() runs to ensure 1..N contiguity.
         let spawnedRecurrence = null;
         let priorityShifted = false;
 
         if (patch.status !== undefined && patch.status !== existing.status) {
             const newStatus = patch.status;
+            const wasOff = isOffQueue(existing.status);
+            const becomesOff = isOffQueue(newStatus);
+            const becameOffQueue = !wasOff && becomesOff;
+            const leftOffQueue = wasOff && !becomesOff;
+
             updates.status = newStatus;
 
-            const becameDone = newStatus === 'Done' && existing.status !== 'Done';
-            const leftDone = existing.status === 'Done' && newStatus !== 'Done';
-
-            if (becameDone) {
+            if (becameOffQueue) {
                 updates.completed_date = new Date().toISOString();
                 updates.previous_status = existing.status;
-            } else if (leftDone) {
+                updates.previous_overall_priority = existing.overallPriority || null;
+                updates.previous_project_priority = existing.projectPriority || null;
+                updates.overall_priority = 0;
+                updates.project_priority = 0;
+                priorityShifted = true;
+            } else if (leftOffQueue) {
                 updates.completed_date = null;
                 updates.previous_status = null;
+                // Restore priorities to their previous slots, clamped to the
+                // size of the queue we're rejoining. If we don't have a stored
+                // previous (legacy data, or item born off-queue), append at end.
+                const openTotal = openCount(); // before this rejoin
+                const openInProj = openCountInProject(existing.projectId || '');
+                const prevO = existing.previousOverallPriority;
+                const prevP = existing.previousProjectPriority;
+                const targetOverall = prevO && prevO > 0
+                    ? Math.min(prevO, openTotal + 1)
+                    : openTotal + 1;
+                const targetProject = prevP && prevP > 0
+                    ? Math.min(prevP, openInProj + 1)
+                    : openInProj + 1;
+                // Make room: shift open items at >= target down by one
+                db.prepare(
+                    `UPDATE todos SET overall_priority = overall_priority + 1
+                     WHERE id != ? AND status NOT IN (${OFF_QUEUE_SQL_LIST})
+                     AND overall_priority >= ?`
+                ).run(id, targetOverall);
+                db.prepare(
+                    `UPDATE todos SET project_priority = project_priority + 1
+                     WHERE id != ? AND status NOT IN (${OFF_QUEUE_SQL_LIST})
+                     AND COALESCE(project_id, '') = ?
+                     AND project_priority >= ?`
+                ).run(id, existing.projectId || '', targetProject);
+                updates.overall_priority = targetOverall;
+                updates.project_priority = targetProject;
+                updates.previous_overall_priority = null;
+                updates.previous_project_priority = null;
+                priorityShifted = true;
             }
+            // open -> open: no priority work needed
 
             applyUpdates(id, updates);
-            const after = getTodo(id);
 
-            if (becameDone) {
+            if (becameOffQueue) {
+                const after = getTodo(id);
                 if (after.isRecurring) spawnedRecurrence = spawnNextRecurrence(after);
-                shiftPriorityForDone(after, true);
-                priorityShifted = true;
-            } else if (leftDone) {
-                shiftPriorityForDone(after, false);
-                priorityShifted = true;
             }
+
+            normalize();
 
             return {
                 todo: getTodo(id),
@@ -299,6 +373,8 @@ export function patchTodo(id, patch) {
         }
 
         applyUpdates(id, updates);
+        // Project change without status change still re-ranks the affected projects.
+        if (projectChanged) normalize();
         return { todo: getTodo(id), spawnedRecurrence: null, priorityShifted: false, projectChanged };
     });
 
@@ -308,7 +384,13 @@ export function patchTodo(id, patch) {
 export function deleteTodo(id) {
     const existing = getTodo(id);
     if (!existing) throw new HttpError(404, 'Todo not found');
-    db.prepare('DELETE FROM todos WHERE id = ?').run(id);
+    const tx = db.transaction(() => {
+        db.prepare('DELETE FROM todos WHERE id = ?').run(id);
+        // If the deleted item was in the queue, its slot now needs to be
+        // closed. Off-queue items leave the queue unaffected.
+        if (!isOffQueue(existing.status)) normalize();
+    });
+    tx();
     return { ok: true, id };
 }
 
@@ -324,58 +406,64 @@ export function setTodoPriority(id, newPriority) {
     const existing = getTodo(id);
     if (!existing) throw new HttpError(404, 'Todo not found');
 
-    // Clamp the requested priority to the actual list bounds. Without
-    // this, callers passing a too-large N create sparse rank values
-    // (e.g. 1, 2, 999) and the contiguous-rank assumption breaks.
-    const totalCount = db.prepare('SELECT COUNT(*) AS c FROM todos').get().c;
-    const projectCount = existing.projectId
-        ? db.prepare("SELECT COUNT(*) AS c FROM todos WHERE project_id = ?").get(existing.projectId).c
-        : 0;
-    const rawN = parseInt(newPriority, 10);
-    const target = Math.max(1, Math.min(Number.isFinite(rawN) ? rawN : 1, Math.max(1, totalCount)));
-    const targetProject = Math.max(1, Math.min(Number.isFinite(rawN) ? rawN : 1, Math.max(1, projectCount)));
+    // Off-queue items don't have a meaningful priority — they sit at 0
+    // and are sorted by completedDate. Refuse to set priority on them
+    // instead of silently no-oping (normalize would just overwrite anyway).
+    if (isOffQueue(existing.status)) {
+        throw new HttpError(400, `Cannot set priority on a ${existing.status} item. Change its status first.`);
+    }
 
     const tx = db.transaction(() => {
+        // Clamp to the size of the open queue (in both spaces). Without
+        // this, priority=99 on a 3-item list creates sparse ranks.
+        const openTotal = openCount();
+        const openInProj = openCountInProject(existing.projectId || '');
+        const rawN = parseInt(newPriority, 10);
+        const fallbackN = Number.isFinite(rawN) ? rawN : 1;
+        const targetOverall = Math.max(1, Math.min(fallbackN, Math.max(1, openTotal)));
+        const targetProject = Math.max(1, Math.min(fallbackN, Math.max(1, openInProj)));
+
         const oldOverall = existing.overallPriority;
-
-        if (target !== oldOverall) {
-            if (target < oldOverall) {
-                // Moving up: bump items in [target, old-1] down by 1
-                db.prepare(`
-                    UPDATE todos SET overall_priority = overall_priority + 1
-                    WHERE id != ? AND overall_priority >= ? AND overall_priority < ?
-                `).run(id, target, oldOverall);
+        if (targetOverall !== oldOverall) {
+            if (targetOverall < oldOverall) {
+                db.prepare(
+                    `UPDATE todos SET overall_priority = overall_priority + 1
+                     WHERE id != ? AND status NOT IN (${OFF_QUEUE_SQL_LIST})
+                     AND overall_priority >= ? AND overall_priority < ?`
+                ).run(id, targetOverall, oldOverall);
             } else {
-                // Moving down: shift items in [old+1, target] up by 1
-                db.prepare(`
-                    UPDATE todos SET overall_priority = overall_priority - 1
-                    WHERE id != ? AND overall_priority > ? AND overall_priority <= ?
-                `).run(id, oldOverall, target);
+                db.prepare(
+                    `UPDATE todos SET overall_priority = overall_priority - 1
+                     WHERE id != ? AND status NOT IN (${OFF_QUEUE_SQL_LIST})
+                     AND overall_priority > ? AND overall_priority <= ?`
+                ).run(id, oldOverall, targetOverall);
             }
-            db.prepare('UPDATE todos SET overall_priority = ? WHERE id = ?').run(target, id);
+            db.prepare('UPDATE todos SET overall_priority = ? WHERE id = ?').run(targetOverall, id);
         }
 
-        // Mirror within the project too, if one is assigned.
-        // Uses the project-specific clamp so a request like
-        // "priority=10" on a project with 3 todos lands at #3, not #10.
-        if (existing.projectId) {
-            const oldProject = existing.projectPriority;
-            if (targetProject !== oldProject) {
-                if (targetProject < oldProject) {
-                    db.prepare(`
-                        UPDATE todos SET project_priority = project_priority + 1
-                        WHERE id != ? AND project_id = ? AND project_priority >= ? AND project_priority < ?
-                    `).run(id, existing.projectId, targetProject, oldProject);
-                } else {
-                    db.prepare(`
-                        UPDATE todos SET project_priority = project_priority - 1
-                        WHERE id != ? AND project_id = ? AND project_priority > ? AND project_priority <= ?
-                    `).run(id, existing.projectId, oldProject, targetProject);
-                }
-                db.prepare('UPDATE todos SET project_priority = ? WHERE id = ?').run(targetProject, id);
+        const oldProject = existing.projectPriority;
+        if (targetProject !== oldProject) {
+            if (targetProject < oldProject) {
+                db.prepare(
+                    `UPDATE todos SET project_priority = project_priority + 1
+                     WHERE id != ? AND status NOT IN (${OFF_QUEUE_SQL_LIST})
+                     AND COALESCE(project_id, '') = ?
+                     AND project_priority >= ? AND project_priority < ?`
+                ).run(id, existing.projectId || '', targetProject, oldProject);
+            } else {
+                db.prepare(
+                    `UPDATE todos SET project_priority = project_priority - 1
+                     WHERE id != ? AND status NOT IN (${OFF_QUEUE_SQL_LIST})
+                     AND COALESCE(project_id, '') = ?
+                     AND project_priority > ? AND project_priority <= ?`
+                ).run(id, existing.projectId || '', oldProject, targetProject);
             }
+            db.prepare('UPDATE todos SET project_priority = ? WHERE id = ?').run(targetProject, id);
         }
 
+        // Defensive: normalize() ensures contiguity even if our targeted
+        // shifts left a gap (e.g. duplicate input from a buggy client).
+        normalize();
         return getTodo(id);
     });
     return tx();
@@ -404,6 +492,10 @@ export function reorderTodos(updates) {
             db.prepare(`UPDATE todos SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
             ids.push(u.id);
         }
+        // Drag-to-reorder sends a batch the client computed locally.
+        // normalize() cleans up any duplicates/gaps if the client was
+        // working from stale data — defense in depth.
+        normalize();
         return ids.map(getTodo).filter(Boolean);
     });
     return tx();
@@ -423,12 +515,21 @@ export function cleanupOldDone() {
     else cutoff.setDate(cutoff.getDate() - 1);                 // Weekday -> yesterday
 
     const cutoffIso = cutoff.toISOString();
-    const rows = db.prepare("SELECT id FROM todos WHERE status='Done' AND completed_date IS NOT NULL AND completed_date < ?").all(cutoffIso);
+    // Include Cancelled too — both are off-queue, both are fair game for cleanup.
+    const rows = db.prepare(
+        `SELECT id FROM todos
+         WHERE status IN (${OFF_QUEUE_SQL_LIST})
+         AND completed_date IS NOT NULL AND completed_date < ?`
+    ).all(cutoffIso);
     const ids = rows.map(r => r.id);
     if (ids.length) {
         const placeholders = ids.map(() => '?').join(',');
         db.prepare(`DELETE FROM todos WHERE id IN (${placeholders})`).run(...ids);
     }
+    // Cleanup only removes off-queue items, which weren't in the queue.
+    // Open list is unaffected — no normalize() needed. But it's cheap, so
+    // run it anyway as a periodic tidy-up.
+    normalize();
     return { deletedIds: ids, cutoff: cutoffIso };
 }
 
@@ -470,6 +571,11 @@ export function replaceState(state) {
         if (state.lastBackup) {
             db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('last_backup', ?)").run(state.lastBackup);
         }
+        // Critical for migration: legacy data often has gaps + duplicates
+        // in the priority field (see PR #7 discussion). normalize() fixes
+        // these as part of the import so the new app starts from a clean
+        // 1..N world.
+        normalize();
         return { projectCount: projects.length, todoCount: todos.length };
     });
 
@@ -507,14 +613,77 @@ function insertTodoRow(t) {
     );
 }
 
+// Count of OPEN todos only (Done/Cancelled don't occupy queue slots).
+function openCount() {
+    return db.prepare(
+        `SELECT COUNT(*) AS c FROM todos WHERE status NOT IN (${OFF_QUEUE_SQL_LIST})`
+    ).get().c;
+}
+
+function openCountInProject(projectId) {
+    return db.prepare(
+        `SELECT COUNT(*) AS c FROM todos
+         WHERE status NOT IN (${OFF_QUEUE_SQL_LIST})
+         AND COALESCE(project_id, '') = ?`
+    ).get(projectId || '').c;
+}
+
+// "Where does a new open todo go?" — at the bottom of the open queue.
 function nextOverallPriority() {
-    const r = db.prepare('SELECT COUNT(*) AS c FROM todos').get();
-    return r.c + 1;
+    return openCount() + 1;
 }
 
 function nextProjectPriority(projectId) {
-    const r = db.prepare('SELECT COUNT(*) AS c FROM todos WHERE COALESCE(project_id, \'\') = ?').get(projectId || '');
-    return r.c + 1;
+    return openCountInProject(projectId) + 1;
+}
+
+// Re-rank all open todos to 1..N contiguously (globally and within each
+// project). All off-queue todos get priority 0. Tie-breaker on existing
+// priority is `created_date` then `id` so the result is fully deterministic.
+//
+// Safe to call multiple times; idempotent.
+function normalize() {
+    // Overall ranks across all open todos
+    const openOverall = db.prepare(
+        `SELECT id FROM todos
+         WHERE status NOT IN (${OFF_QUEUE_SQL_LIST})
+         ORDER BY overall_priority ASC, created_date ASC, id ASC`
+    ).all();
+    const setOverall = db.prepare('UPDATE todos SET overall_priority = ? WHERE id = ?');
+    openOverall.forEach((row, i) => setOverall.run(i + 1, row.id));
+
+    // Off-queue items all get 0
+    db.prepare(
+        `UPDATE todos SET overall_priority = 0 WHERE status IN (${OFF_QUEUE_SQL_LIST})`
+    ).run();
+
+    // Per-project ranks (include the "no project" bucket for completeness)
+    const projectIds = db.prepare(
+        `SELECT DISTINCT COALESCE(project_id, '') AS pid FROM todos
+         WHERE status NOT IN (${OFF_QUEUE_SQL_LIST})`
+    ).all().map(r => r.pid);
+
+    const setProject = db.prepare('UPDATE todos SET project_priority = ? WHERE id = ?');
+    for (const pid of projectIds) {
+        const rows = db.prepare(
+            `SELECT id FROM todos
+             WHERE status NOT IN (${OFF_QUEUE_SQL_LIST})
+             AND COALESCE(project_id, '') = ?
+             ORDER BY project_priority ASC, created_date ASC, id ASC`
+        ).all(pid);
+        rows.forEach((row, i) => setProject.run(i + 1, row.id));
+    }
+    db.prepare(
+        `UPDATE todos SET project_priority = 0 WHERE status IN (${OFF_QUEUE_SQL_LIST})`
+    ).run();
+}
+
+// Exposed so an admin can re-normalize without doing a fake mutation
+// (used once after import to clean up legacy localStorage data).
+export function normalizePriorities() {
+    const tx = db.transaction(() => normalize());
+    tx();
+    return { ok: true };
 }
 
 function clampWeeks(v) {
@@ -601,47 +770,6 @@ function spawnNextRecurrence(todo) {
     };
     insertTodoRow(spawned);
     return spawned;
-}
-
-// --- Priority shift for Done (ported from movePriorityForDone) --
-
-function shiftPriorityForDone(todo, markingDone) {
-    if (markingDone) {
-        // Save current priorities so we can restore later
-        db.prepare(`
-            UPDATE todos SET
-                previous_overall_priority = overall_priority,
-                previous_project_priority = project_priority
-            WHERE id = ?
-        `).run(todo.id);
-
-        const oldOverall = todo.overallPriority;
-        db.prepare('UPDATE todos SET overall_priority = overall_priority - 1 WHERE id != ? AND overall_priority > ?').run(todo.id, oldOverall);
-        db.prepare('UPDATE todos SET overall_priority = 0 WHERE id = ?').run(todo.id);
-
-        if (todo.projectId) {
-            const oldProject = todo.projectPriority;
-            db.prepare('UPDATE todos SET project_priority = project_priority - 1 WHERE id != ? AND project_id = ? AND project_priority > ?')
-                .run(todo.id, todo.projectId, oldProject);
-            db.prepare('UPDATE todos SET project_priority = 0 WHERE id = ?').run(todo.id);
-        }
-    } else {
-        // Restore from saved priorities, shifting others to make room
-        const after = getTodo(todo.id);
-        const targetOverall = (after.previousOverallPriority && after.previousOverallPriority > 0) ? after.previousOverallPriority : 1;
-
-        db.prepare('UPDATE todos SET overall_priority = overall_priority + 1 WHERE id != ? AND overall_priority >= ?').run(todo.id, targetOverall);
-        db.prepare('UPDATE todos SET overall_priority = ?, previous_overall_priority = NULL WHERE id = ?').run(targetOverall, todo.id);
-
-        if (todo.projectId) {
-            const targetProject = (after.previousProjectPriority && after.previousProjectPriority > 0) ? after.previousProjectPriority : 1;
-            db.prepare('UPDATE todos SET project_priority = project_priority + 1 WHERE id != ? AND project_id = ? AND project_priority >= ?')
-                .run(todo.id, todo.projectId, targetProject);
-            db.prepare('UPDATE todos SET project_priority = ?, previous_project_priority = NULL WHERE id = ?').run(targetProject, todo.id);
-        } else {
-            db.prepare('UPDATE todos SET previous_project_priority = NULL WHERE id = ?').run(todo.id);
-        }
-    }
 }
 
 // --- Project resolver (used by chat tool) -----------------------

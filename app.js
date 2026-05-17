@@ -286,11 +286,19 @@ docker compose up -d</pre>
 
     // --- Build a todo table ---
     function buildTable(todos, showProject, sortBy) {
-        if (sortBy === 'project') {
-            todos = todos.slice().sort((a, b) => (a.projectPriority ?? 999) - (b.projectPriority ?? 999));
-        } else {
-            todos = todos.slice().sort((a, b) => (a.overallPriority ?? 999) - (b.overallPriority ?? 999));
-        }
+        // Sort: open items (priority 1..N) first, then off-queue items
+        // (priority 0 — Done/Cancelled) at the bottom, sorted by
+        // completedDate DESC so most recently finished is first.
+        const key = sortBy === 'project' ? 'projectPriority' : 'overallPriority';
+        const isOff = t => t.status === 'Done' || t.status === 'Cancelled';
+        todos = todos.slice().sort((a, b) => {
+            const aOff = isOff(a), bOff = isOff(b);
+            if (aOff !== bOff) return aOff ? 1 : -1;            // open before off
+            if (aOff && bOff) {
+                return String(b.completedDate || '').localeCompare(String(a.completedDate || ''));
+            }
+            return (a[key] || 999) - (b[key] || 999);
+        });
         if (todos.length === 0) {
             return '<div class="empty-state"><p>No to-do items yet. Click "+ New To-Do" to get started.</p></div>';
         }

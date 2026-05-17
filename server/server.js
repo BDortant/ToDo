@@ -14,6 +14,7 @@ import {
     createTodo, patchTodo, deleteTodo, getTodo,
     reorderTodos, setTodoPriority, cleanupOldDone,
     replaceState, setLastBackup,
+    normalizePriorities,
     resolveProject,
     HttpError
 } from './db.js';
@@ -76,6 +77,11 @@ app.get('/api/todos/:id', wrap((req) => {
 
 app.post('/api/todos/reorder', wrap((req) => reorderTodos(req.body)));
 app.post('/api/todos/cleanup', wrap(() => cleanupOldDone()));
+
+// Admin: re-rank all open todos to 1..N. Idempotent. Normally not needed
+// (every mutation calls it internally), but exposed for one-off recovery
+// after legacy data imports.
+app.post('/api/normalize', wrap(() => normalizePriorities()));
 
 // Friendly single-todo priority setter (chat tool uses this)
 app.post('/api/todos/:id/priority', wrap((req) => {
