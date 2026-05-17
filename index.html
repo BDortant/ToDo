@@ -23,12 +23,8 @@
         <div class="sidebar-section">
             <h2>Views</h2>
             <ul class="view-toggle" id="view-toggle">
-                <li class="active" data-bucket="now" onclick="App.setBucket('now')">📋 Now</li>
-                <li data-bucket="all" onclick="App.setBucket('all')">All items</li>
-                <li data-bucket="by-project" onclick="App.setBucket('by-project')">By project</li>
-                <li data-bucket="delegatable" onclick="App.setBucket('delegatable')">🤝 Delegatable</li>
-                <li data-bucket="watching" onclick="App.setBucket('watching')">👀 Watching</li>
-                <li data-bucket="snoozed" onclick="App.setBucket('snoozed')">💤 Snoozed</li>
+                <li class="active" data-view="all" onclick="App.setView('all')">All items</li>
+                <li data-view="by-project" onclick="App.setView('by-project')">By project</li>
             </ul>
         </div>
         <div class="sidebar-section">

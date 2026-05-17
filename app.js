@@ -84,22 +84,35 @@ const ApiStatus = (() => {
 const App = (() => {
     let data = { projects: [], todos: [], lastBackup: null };
 
-    let currentView = 'all';           // 'all' or 'by-project' (set by bucket below)
-    let currentBucket = 'now';         // 'now' | 'all' | 'by-project' | 'delegatable' | 'watching' | 'snoozed'
+    let currentView = 'all';           // 'all' or 'by-project'
     let selectedProjectId = null;      // filter in sidebar
     let editingTodoTags = [];          // temp tags for the form
     let draggedRowId = null;           // drag-to-reorder
     let pollTimer = null;
     const POLL_MS = 10000;             // cross-client sync interval
 
-    // Per-column sort + filter state (table upgrade).
-    // sortState.key is the column key; sortState.dir is 'asc' or 'desc'.
-    // colFilters[key] is the per-column substring/value filter.
+    // Per-column sort + filter state.
+    // - Text columns: string substring filter
+    // - Enum columns: array of selected values (multi-select)
     let sortState = { key: 'overallPriority', dir: 'asc' };
     const colFilters = {
-        title: '', project: '', status: '', effort: '',
-        deadline: '', assignee: '', tags: ''
+        title: '',           // text substring
+        deadline: '',        // text substring
+        assignee: '',        // text substring
+        project: [],         // enum multi-select (project names)
+        status: [],          // enum multi-select
+        effort: [],          // enum multi-select (incl. '' for "no effort")
+        tags: []             // enum multi-select (real tags + 'snoozed' virtual)
     };
+
+    // Which filter popover is currently open (only one at a time).
+    let openPopoverKey = null;
+
+    // Reserved tags that ALWAYS appear in the tag filter dropdown, even when
+    // no item currently carries them. 'snoozed' is a virtual filter that
+    // matches items with snoozeUntil in the future (driven by the backend
+    // snooze_until column, not a real tag).
+    const RESERVED_FILTER_TAGS = ['delegatable', 'watching', 'snoozed'];
 
     // --- Helpers ---
 
@@ -227,23 +240,6 @@ docker compose up -d</pre>
             todos = todos.filter(t => t.projectId === projectId);
         }
 
-        // Bucket filter — sidebar's main views. 'all' and 'by-project' don't
-        // restrict; the other buckets apply a hard filter.
-        const today = todayLocalISO();
-        const hasTag = (t, tag) => (t.tags || []).some(x => x.toLowerCase() === tag);
-        const isSnoozed = t => t.snoozeUntil && t.snoozeUntil > today;
-        if (currentBucket === 'now') {
-            // Open, not snoozed
-            todos = todos.filter(t => t.status !== 'Done' && t.status !== 'Cancelled' && !isSnoozed(t));
-        } else if (currentBucket === 'delegatable') {
-            todos = todos.filter(t => hasTag(t, 'delegatable'));
-        } else if (currentBucket === 'watching') {
-            todos = todos.filter(t => hasTag(t, 'watching'));
-        } else if (currentBucket === 'snoozed') {
-            todos = todos.filter(t => isSnoozed(t));
-        }
-        // 'all' and 'by-project': no extra filtering here
-
         // Daily view: show done since last working day + open items planned for today
         const dailyMode = document.getElementById('filter-daily').checked;
         if (dailyMode) {
@@ -339,18 +335,29 @@ docker compose up -d</pre>
         });
 
         // Per-column filters (applied AFTER global filters in getFilteredTodos).
-        // Text columns: case-insensitive substring. Enum columns: exact match.
+        // - Text columns: case-insensitive substring match
+        // - Enum multi-select: include row if its value is in the selected array
+        //   (empty array = no filter applied)
         const f = colFilters;
-        if (f.title)    todos = todos.filter(t => (t.title || '').toLowerCase().includes(f.title.toLowerCase()));
-        if (f.project)  todos = todos.filter(t => getProjectName(t.projectId) === f.project);
-        if (f.status)   todos = todos.filter(t => t.status === f.status);
-        if (f.effort)   todos = todos.filter(t => (t.effort || '') === f.effort);
-        if (f.deadline) todos = todos.filter(t => (t.deadline || '').includes(f.deadline));
-        if (f.assignee) todos = todos.filter(t => (t.assignee || '').toLowerCase().includes(f.assignee.toLowerCase()));
-        if (f.tags)     todos = todos.filter(t => (t.tags || []).includes(f.tags));
-
-        if (todos.length === 0) {
-            return '<div class="empty-state"><p>No matching to-do items. Try clearing filters, or click "+ New To-Do".</p></div>';
+        const today = todayLocalISO();
+        if (f.title)         todos = todos.filter(t => (t.title || '').toLowerCase().includes(f.title.toLowerCase()));
+        if (f.deadline)      todos = todos.filter(t => (t.deadline || '').includes(f.deadline));
+        if (f.assignee)      todos = todos.filter(t => (t.assignee || '').toLowerCase().includes(f.assignee.toLowerCase()));
+        if (f.project.length) todos = todos.filter(t => f.project.includes(getProjectName(t.projectId)));
+        if (f.status.length)  todos = todos.filter(t => f.status.includes(t.status));
+        if (f.effort.length)  todos = todos.filter(t => f.effort.includes(t.effort || ''));
+        if (f.tags.length) {
+            todos = todos.filter(t => {
+                for (const sel of f.tags) {
+                    // 'snoozed' is a virtual filter — matches snoozed items via snoozeUntil
+                    if (sel === 'snoozed') {
+                        if (t.snoozeUntil && t.snoozeUntil > today) return true;
+                    } else if ((t.tags || []).includes(sel)) {
+                        return true;
+                    }
+                }
+                return false;
+            });
         }
 
         const statusOptions = ['To Do', 'In Progress', 'Waiting on Client', 'Waiting on Me', 'Waiting on Third Party', 'On Hold', 'In Review', 'Done', 'Cancelled'];
@@ -366,22 +373,56 @@ docker compose up -d</pre>
         const th = (key, label, attrs = '') =>
             `<th class="sortable" ${attrs} onclick="App.sortBy('${key}')">${label} ${sortIndicator(key)}</th>`;
 
-        // Filter cells. `data-filter-key` lets the focus-preservation helper
-        // re-attach focus to the same input after each render.
+        // Filter cell renderers. `data-filter-key` lets the focus-preservation
+        // helper re-attach focus to the same input after each render.
+
+        // Text filter: case-insensitive substring match.
         const tfText = (key, placeholder = '') =>
             `<th><input type="text" class="col-filter" data-filter-key="${key}" value="${escapeAttr(colFilters[key])}" placeholder="${escapeAttr(placeholder)}" oninput="App.setColFilter('${key}', this.value)"></th>`;
-        const tfEnum = (key, options, labelFor) =>
-            `<th><select class="col-filter" data-filter-key="${key}" onchange="App.setColFilter('${key}', this.value)">
-                <option value="">all</option>
-                ${options.map(o => `<option value="${escapeAttr(o)}" ${colFilters[key] === o ? 'selected' : ''}>${escapeAttr(labelFor ? labelFor(o) : (o || '—'))}</option>`).join('')}
-            </select></th>`;
 
-        // Collect distinct values for enum-style filters. Sorted for stable
-        // dropdown order — alphabetical for projects/tags, predefined for status/effort.
-        const distinctTags = [...new Set(data.todos.flatMap(t => t.tags || []))].sort((a, b) => a.localeCompare(b));
-        const distinctProjects = data.projects.slice().sort((a, b) => a.name.localeCompare(b.name));
-        // Use project names as values so the filter logic stays string-based.
-        const projectFilterOptions = distinctProjects.map(p => p.name);
+        // Multi-select enum filter: button + popover with checkboxes.
+        // Selected count shown on button. Click outside to close.
+        const tfMulti = (key, options, labelFor) => {
+            const selected = colFilters[key] || [];
+            const isOpen = openPopoverKey === key;
+            const btnLabel = selected.length === 0
+                ? 'all'
+                : (selected.length === 1
+                    ? (labelFor ? labelFor(selected[0]) : (selected[0] || '—'))
+                    : `${selected.length} selected`);
+            const btnClass = selected.length > 0 ? 'col-filter-btn active' : 'col-filter-btn';
+            return `<th class="multi-filter-cell">
+                <button type="button" class="${btnClass}" data-filter-key="${key}" onclick="event.stopPropagation(); App.toggleFilterPopover('${key}')">
+                    ${escapeHTML(btnLabel)} <span class="caret">▾</span>
+                </button>
+                <div class="col-filter-popover${isOpen ? ' open' : ''}" data-popover-key="${key}">
+                    <label class="all-row">
+                        <input type="checkbox" ${selected.length === 0 ? 'checked' : ''} onchange="App.clearColFilter('${key}')">
+                        <em>(all)</em>
+                    </label>
+                    <div class="popover-options">
+                        ${options.map(o => {
+                            const label = labelFor ? labelFor(o) : (o || '—');
+                            const isReserved = key === 'tags' && RESERVED_FILTER_TAGS.includes(o);
+                            return `<label class="${isReserved ? 'reserved-tag' : ''}">
+                                <input type="checkbox" value="${escapeAttr(o)}"
+                                       ${selected.includes(o) ? 'checked' : ''}
+                                       onchange="App.toggleColFilterValue('${key}', this.value)">
+                                ${escapeHTML(label)}
+                            </label>`;
+                        }).join('')}
+                    </div>
+                </div>
+            </th>`;
+        };
+
+        // Collect distinct values. Project from project list; tags merged with
+        // reserved filter tags so delegatable/watching/snoozed always show.
+        const distinctTagsSet = new Set([...RESERVED_FILTER_TAGS, ...data.todos.flatMap(t => t.tags || [])]);
+        const distinctTags = [...distinctTagsSet].sort((a, b) => a.localeCompare(b));
+        const projectFilterOptions = data.projects.slice()
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map(p => p.name);
 
         let html = `<table class="todo-table">
             <thead>
@@ -404,16 +445,27 @@ docker compose up -d</pre>
                     <th></th>
                     <th></th>
                     ${tfText('title', 'filter…')}
-                    ${showProject ? tfEnum('project', projectFilterOptions) : ''}
-                    ${tfEnum('status', statusOptions)}
-                    ${tfEnum('effort', effortOptions)}
+                    ${showProject ? tfMulti('project', projectFilterOptions) : ''}
+                    ${tfMulti('status', statusOptions)}
+                    ${tfMulti('effort', effortOptions, o => o ? (o[0].toUpperCase() + o.slice(1)) : '—')}
                     ${tfText('deadline', 'YYYY-MM')}
                     ${tfText('assignee', 'filter…')}
                     <th></th>
-                    ${tfEnum('tags', distinctTags)}
+                    ${tfMulti('tags', distinctTags)}
                     <th></th>
                 </tr>
             </thead><tbody>`;
+
+        // Empty-state: render as a single tbody row so the headers + filter
+        // row stay visible. Previously we returned a separate <div>, which
+        // wiped the filter inputs and locked the user out of typing more.
+        if (todos.length === 0) {
+            const colCount = 11 + (showProject ? 1 : 0);
+            html += `<tr class="empty-row"><td colspan="${colCount}">
+                <em>No matching to-do items. Adjust the filters above or click "+ New To-Do".</em>
+            </td></tr></tbody></table>`;
+            return html;
+        }
 
         for (const todo of todos) {
             const safeId = escapeAttr(todo.id);
@@ -522,11 +574,39 @@ docker compose up -d</pre>
     }
 
     function setColFilter(key, value) {
+        // Text filters use a string; enum filters use an array (use toggle).
         colFilters[key] = value;
         // render() rebuilds the entire table including the filter inputs.
         // Without focus-preservation the input gets destroyed-and-recreated
         // on every keystroke, kicking the user out after typing one char.
         withPreservedFilterFocus(() => render());
+    }
+
+    // Toggle a value in an enum multi-select filter (status/effort/project/tags).
+    function toggleColFilterValue(key, value) {
+        const arr = colFilters[key];
+        if (!Array.isArray(arr)) return;
+        const idx = arr.indexOf(value);
+        if (idx === -1) arr.push(value);
+        else arr.splice(idx, 1);
+        render();
+    }
+
+    // Clear all selections in an enum multi-select filter (= "all" / no filter).
+    function clearColFilter(key) {
+        if (Array.isArray(colFilters[key])) {
+            colFilters[key].length = 0;
+        } else {
+            colFilters[key] = '';
+        }
+        render();
+    }
+
+    // Toggle the popover panel for a multi-select filter. Only one open at a
+    // time. Closes when the user clicks outside (see init's document handler).
+    function toggleFilterPopover(key) {
+        openPopoverKey = openPopoverKey === key ? null : key;
+        render();
     }
 
     // Save the currently-focused filter input, run a render, then restore
@@ -603,9 +683,10 @@ docker compose up -d</pre>
             </li>`;
         }).join('');
 
-        // Bucket toggle — highlight the active sidebar bucket
+        // View toggle — "All items" is active when no project selected.
         document.querySelectorAll('#view-toggle li').forEach(li => {
-            li.classList.toggle('active', li.dataset.bucket === currentBucket && !selectedProjectId);
+            const isActive = li.dataset.view === currentView && !(li.dataset.view === 'all' && selectedProjectId);
+            li.classList.toggle('active', isActive);
         });
 
         // Main title
@@ -614,22 +695,13 @@ docker compose up -d</pre>
         // Main content
         const container = document.getElementById('main-content');
 
-        const bucketLabel = {
-            now: '📋 Now',
-            all: 'All items',
-            'by-project': 'By project',
-            delegatable: '🤝 Delegatable',
-            watching: '👀 Watching',
-            snoozed: '💤 Snoozed'
-        }[currentBucket] || 'All items';
-
         if (currentView === 'all') {
             if (selectedProjectId) {
-                titleEl.textContent = `${getProjectName(selectedProjectId)} — ${bucketLabel}`;
+                titleEl.textContent = getProjectName(selectedProjectId);
                 const todos = getFilteredTodos(selectedProjectId);
                 container.innerHTML = buildTable(todos, false, 'project');
             } else {
-                titleEl.textContent = bucketLabel;
+                titleEl.textContent = 'All items';
                 const todos = getFilteredTodos(null);
                 container.innerHTML = buildTable(todos, true, 'overall');
             }
@@ -665,22 +737,8 @@ docker compose up -d</pre>
 
     // --- Views ---
     function setView(view) {
-        // Backward-compatibility: 'all' / 'by-project' map to currentView.
         currentView = view;
         selectedProjectId = null;
-        render();
-    }
-
-    // Sidebar bucket switcher. Maps the bucket onto currentView for the
-    // existing render branches (all-list vs grouped-by-project).
-    function setBucket(bucket) {
-        currentBucket = bucket;
-        selectedProjectId = null;
-        if (bucket === 'by-project') {
-            currentView = 'by-project';
-        } else {
-            currentView = 'all';
-        }
         render();
     }
 
@@ -1182,7 +1240,20 @@ docker compose up -d</pre>
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
                 document.querySelectorAll('.modal-backdrop.open').forEach(m => m.classList.remove('open'));
+                if (openPopoverKey) {
+                    openPopoverKey = null;
+                    render();
+                }
             }
+        });
+
+        // Click-outside to close any open multi-select filter popover.
+        document.addEventListener('click', function(e) {
+            if (!openPopoverKey) return;
+            if (e.target.closest('.col-filter-popover')) return;
+            if (e.target.closest('.col-filter-btn')) return;
+            openPopoverKey = null;
+            render();
         });
 
         // Initial load from API. On failure, show a clear error overlay
@@ -1233,8 +1304,10 @@ docker compose up -d</pre>
         retryInit,
         sortBy,
         setColFilter,
+        toggleColFilterValue,
+        clearColFilter,
+        toggleFilterPopover,
         snoozeTodo,
-        unsnoozeTodo,
-        setBucket
+        unsnoozeTodo
     };
 })();

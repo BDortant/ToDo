@@ -160,6 +160,90 @@ body {
     font-weight: normal;
 }
 
+/* Empty-results row inside the table body (keeps headers + filter row visible). */
+.todo-table tr.empty-row td {
+    padding: 24px;
+    text-align: center;
+    color: #888;
+    font-style: italic;
+    background: #fafafa;
+}
+
+/* === Multi-select filter (button + popover with checkboxes) === */
+
+/* The TH wrapping each multi-filter button needs relative positioning so
+   the popover anchors below it. */
+.todo-table th.multi-filter-cell {
+    position: relative;
+    overflow: visible;
+}
+
+/* Button styled like a select but compact. Active = has selections. */
+.col-filter-btn {
+    width: 100%;
+    padding: 3px 6px;
+    border: 1px solid #d0d0d0;
+    border-radius: 3px;
+    background: #fff;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+    box-sizing: border-box;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 4px;
+}
+.col-filter-btn:hover { border-color: #888; }
+.col-filter-btn.active {
+    border-color: #6366f1;
+    background: #eef2ff;
+    color: #4338ca;
+    font-weight: 500;
+}
+.col-filter-btn .caret { color: #888; font-size: 10px; }
+.col-filter-btn.active .caret { color: #6366f1; }
+
+/* Popover panel. Anchored below its button, scrollable when many options. */
+.col-filter-popover {
+    display: none;
+    position: absolute;
+    top: calc(100% + 2px);
+    left: 0;
+    min-width: 180px;
+    max-width: 280px;
+    max-height: 280px;
+    overflow-y: auto;
+    background: #fff;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+    padding: 4px 0;
+    z-index: 20;
+    font-size: 13px;
+    font-weight: normal;
+}
+.col-filter-popover.open { display: block; }
+.col-filter-popover label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    cursor: pointer;
+    user-select: none;
+    color: #333;
+}
+.col-filter-popover label:hover { background: #f3f4f6; }
+.col-filter-popover label.all-row {
+    border-bottom: 1px solid #e5e7eb;
+    margin-bottom: 4px;
+}
+.col-filter-popover label.reserved-tag {
+    color: #4338ca;
+    font-weight: 500;
+}
+.col-filter-popover .popover-options { padding: 2px 0; }
+
 /* ===== Sidebar ===== */
 .sidebar {
     background: #fff;
@@ -298,7 +382,8 @@ body {
     border-collapse: collapse;
     background: #fff;
     border-radius: 8px;
-    overflow: hidden;
+    /* No overflow:hidden — would clip the multi-select filter popover.
+       The slight loss of corner-clipping is invisible in practice. */
     box-shadow: 0 1px 3px rgba(0,0,0,0.08);
 }
 
