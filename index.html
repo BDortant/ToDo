@@ -23,8 +23,12 @@
         <div class="sidebar-section">
             <h2>Views</h2>
             <ul class="view-toggle" id="view-toggle">
-                <li class="active" data-view="all" onclick="App.setView('all')">All Items</li>
-                <li data-view="by-project" onclick="App.setView('by-project')">By Project</li>
+                <li class="active" data-bucket="now" onclick="App.setBucket('now')">📋 Now</li>
+                <li data-bucket="all" onclick="App.setBucket('all')">All items</li>
+                <li data-bucket="by-project" onclick="App.setBucket('by-project')">By project</li>
+                <li data-bucket="delegatable" onclick="App.setBucket('delegatable')">🤝 Delegatable</li>
+                <li data-bucket="watching" onclick="App.setBucket('watching')">👀 Watching</li>
+                <li data-bucket="snoozed" onclick="App.setBucket('snoozed')">💤 Snoozed</li>
             </ul>
         </div>
         <div class="sidebar-section">
@@ -163,6 +167,14 @@
                 <div class="form-group">
                     <label>Assignee</label>
                     <input type="text" id="todo-assignee">
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Snooze until (optional)</label>
+                    <input type="date" id="todo-snooze-until">
+                    <small style="color:#888;font-size:11px">Hides from Today/Now until this date.</small>
                 </div>
             </div>
 

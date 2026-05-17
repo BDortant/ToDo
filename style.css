@@ -96,6 +96,70 @@ body {
 .load-error button { margin-top: 8px; }
 .load-error details { margin-top: 16px; font-size: 13px; color: #666; }
 
+/* === Table upgrade: clickable headers + filter row + snooze visuals === */
+
+/* Clickable sortable headers */
+.todo-table th.sortable {
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.1s ease;
+}
+.todo-table th.sortable:hover { background: #f5f5f7; }
+.todo-table .sort-indicator {
+    display: inline-block;
+    font-size: 11px;
+    color: #aaa;
+    margin-left: 2px;
+}
+.todo-table .sort-indicator.active {
+    color: #1a1a2e;
+    font-weight: 600;
+}
+
+/* Filter row under the header */
+.todo-table thead .filter-row th {
+    padding: 4px 6px;
+    background: #fafafa;
+    border-bottom: 1px solid #e0e0e0;
+    font-weight: normal;
+}
+.todo-table .col-filter {
+    width: 100%;
+    padding: 3px 6px;
+    border: 1px solid #d0d0d0;
+    border-radius: 3px;
+    font-size: 12px;
+    background: #fff;
+    box-sizing: border-box;
+}
+.todo-table .col-filter:focus {
+    outline: none;
+    border-color: #888;
+}
+
+/* Action column — pin to the right with a subtle separator */
+.todo-table .actions-cell {
+    text-align: right;
+    white-space: nowrap;
+    border-left: 1px solid #f0f0f0;
+}
+.todo-table .actions-cell .btn-icon {
+    padding: 2px 4px;
+}
+
+/* Snoozed rows + badge — appear muted; visible in "All Items" view only */
+.todo-table tr.snoozed { opacity: 0.55; }
+.snooze-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    background: #e0e7ff;
+    color: #4338ca;
+    font-size: 11px;
+    font-weight: normal;
+}
+
 /* ===== Sidebar ===== */
 .sidebar {
     background: #fff;

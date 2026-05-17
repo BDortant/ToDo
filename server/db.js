@@ -84,7 +84,27 @@ export function initDb(dataDir) {
         CREATE INDEX IF NOT EXISTS idx_todos_status ON todos(status);
     `);
 
+    // Additive migrations — safe to re-run, only add column if missing.
+    // SQLite doesn't have ADD COLUMN IF NOT EXISTS, so we check pragma first.
+    ensureColumn('todos', 'updated_date', 'TEXT');
+    ensureColumn('todos', 'snooze_until', 'TEXT'); // YYYY-MM-DD, NULL = not snoozed
+
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_todos_snooze ON todos(snooze_until);`);
+
+    // Backfill updated_date for existing rows so the triage skill can
+    // tell what's stale even for rows created before this column existed.
+    db.prepare(
+        'UPDATE todos SET updated_date = COALESCE(updated_date, completed_date, created_date) WHERE updated_date IS NULL'
+    ).run();
+
     return db;
+}
+
+function ensureColumn(table, column, decl) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+    if (!cols.find(c => c.name === column)) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+    }
 }
 
 // --- Serialization helpers ---------------------------------------
@@ -104,7 +124,9 @@ function rowToTodo(row) {
         notes: row.notes ?? '',
         tags: safeParseArray(row.tags),
         createdDate: row.created_date,
+        updatedDate: row.updated_date ?? row.created_date,
         completedDate: row.completed_date ?? null,
+        snoozeUntil: row.snooze_until ?? null,
         isRecurring: !!row.is_recurring,
         recurringWeeks: row.recurring_weeks,
         recurringDays: safeParseArray(row.recurring_days),
@@ -238,7 +260,9 @@ export function createTodo(input) {
         notes: input.notes ?? TODO_DEFAULTS.notes,
         tags: Array.isArray(input.tags) ? input.tags : TODO_DEFAULTS.tags,
         createdDate: nowIso,
+        updatedDate: nowIso,
         completedDate: offQueue ? nowIso : null,
+        snoozeUntil: input.snoozeUntil || null,
         isRecurring: !!input.isRecurring,
         recurringWeeks: clampWeeks(input.recurringWeeks),
         recurringDays: normalizeDays(input.recurringDays)
@@ -274,6 +298,11 @@ export function patchTodo(id, patch) {
         if (patch.isRecurring !== undefined) updates.is_recurring = patch.isRecurring ? 1 : 0;
         if (patch.recurringWeeks !== undefined) updates.recurring_weeks = clampWeeks(patch.recurringWeeks);
         if (patch.recurringDays !== undefined) updates.recurring_days = JSON.stringify(normalizeDays(patch.recurringDays));
+        if (patch.snoozeUntil !== undefined) {
+            // null / empty string = unsnooze; otherwise expect YYYY-MM-DD
+            const v = patch.snoozeUntil;
+            updates.snooze_until = (v && String(v).trim()) ? String(v).trim() : null;
+        }
 
         if (patch.projectId !== undefined && patch.projectId !== existing.projectId) {
             if (patch.projectId && !getProject(patch.projectId)) {
@@ -469,6 +498,44 @@ export function setTodoPriority(id, newPriority) {
     return tx();
 }
 
+// --- Snooze ----------------------------------------------------
+//
+// Snooze hides a todo from the active queue views until its
+// `snoozeUntil` date passes. It's a presentation filter, not a
+// state change — the todo keeps its priority slot and reappears
+// in the queue automatically the next time its date is computed.
+
+function tomorrowLocalDate() {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
+
+export function snoozeTodo(id, until) {
+    const existing = getTodo(id);
+    if (!existing) throw new HttpError(404, 'Todo not found');
+    if (isOffQueue(existing.status)) {
+        throw new HttpError(400, `Cannot snooze a ${existing.status} item.`);
+    }
+    // Default: tomorrow. Allow YYYY-MM-DD only (strict).
+    const target = (until && String(until).trim()) ? String(until).trim() : tomorrowLocalDate();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(target)) {
+        throw new HttpError(400, `snoozeUntil must be YYYY-MM-DD, got: ${target}`);
+    }
+    applyUpdates(id, { snooze_until: target });
+    return getTodo(id);
+}
+
+export function unsnoozeTodo(id) {
+    const existing = getTodo(id);
+    if (!existing) throw new HttpError(404, 'Todo not found');
+    applyUpdates(id, { snooze_until: null });
+    return getTodo(id);
+}
+
 // --- Reorder ----------------------------------------------------
 
 export function reorderTodos(updates) {
@@ -562,7 +629,9 @@ export function replaceState(state) {
                 notes: t.notes ?? '',
                 tags: Array.isArray(t.tags) ? t.tags : [],
                 createdDate: t.createdDate || new Date().toISOString(),
+                updatedDate: t.updatedDate || t.createdDate || new Date().toISOString(),
                 completedDate: t.completedDate || null,
+                snoozeUntil: t.snoozeUntil || null,
                 isRecurring: !!t.isRecurring,
                 recurringWeeks: clampWeeks(t.recurringWeeks),
                 recurringDays: normalizeDays(t.recurringDays)
@@ -591,8 +660,14 @@ export function setLastBackup(iso) {
 function applyUpdates(id, updates) {
     const keys = Object.keys(updates);
     if (!keys.length) return;
-    const sets = keys.map(k => `${k} = ?`).join(', ');
-    const vals = keys.map(k => updates[k]);
+    // Auto-bump updated_date on every real mutation so the triage skill
+    // can spot stale items. Skip if the caller already set it (e.g. import).
+    if (!('updated_date' in updates)) {
+        updates = { ...updates, updated_date: new Date().toISOString() };
+    }
+    const finalKeys = Object.keys(updates);
+    const sets = finalKeys.map(k => `${k} = ?`).join(', ');
+    const vals = finalKeys.map(k => updates[k]);
     vals.push(id);
     db.prepare(`UPDATE todos SET ${sets} WHERE id = ?`).run(...vals);
 }
@@ -602,13 +677,13 @@ function insertTodoRow(t) {
         INSERT INTO todos (
             id, title, project_id, status, overall_priority, project_priority,
             effort, deadline, assignee, notes, tags,
-            created_date, completed_date,
+            created_date, updated_date, completed_date, snooze_until,
             is_recurring, recurring_weeks, recurring_days
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
         t.id, t.title, t.projectId || null, t.status, t.overallPriority, t.projectPriority,
         t.effort || null, t.deadline || null, t.assignee || null, t.notes || null, JSON.stringify(t.tags || []),
-        t.createdDate, t.completedDate || null,
+        t.createdDate, t.updatedDate || t.createdDate, t.completedDate || null, t.snoozeUntil || null,
         t.isRecurring ? 1 : 0, t.recurringWeeks, JSON.stringify(t.recurringDays || [])
     );
 }

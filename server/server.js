@@ -13,6 +13,7 @@ import {
     createProject, patchProject, deleteProject,
     createTodo, patchTodo, deleteTodo, getTodo,
     reorderTodos, setTodoPriority, cleanupOldDone,
+    snoozeTodo, unsnoozeTodo,
     replaceState, setLastBackup,
     normalizePriorities,
     resolveProject,
@@ -89,6 +90,11 @@ app.post('/api/todos/:id/priority', wrap((req) => {
     if (p === undefined) throw new HttpError(400, 'priority is required');
     return setTodoPriority(req.params.id, p);
 }));
+
+// Snooze / unsnooze a todo. Snooze hides it from active views until the
+// given date (defaults to tomorrow). The todo keeps its priority slot.
+app.post('/api/todos/:id/snooze', wrap((req) => snoozeTodo(req.params.id, req.body?.until)));
+app.post('/api/todos/:id/unsnooze', wrap((req) => unsnoozeTodo(req.params.id)));
 
 // Project resolver (chat tool sugar)
 app.get('/api/projects/resolve', wrap((req) => {

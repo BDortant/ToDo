@@ -84,12 +84,22 @@ const ApiStatus = (() => {
 const App = (() => {
     let data = { projects: [], todos: [], lastBackup: null };
 
-    let currentView = 'all';           // 'all' or 'by-project'
+    let currentView = 'all';           // 'all' or 'by-project' (set by bucket below)
+    let currentBucket = 'now';         // 'now' | 'all' | 'by-project' | 'delegatable' | 'watching' | 'snoozed'
     let selectedProjectId = null;      // filter in sidebar
     let editingTodoTags = [];          // temp tags for the form
     let draggedRowId = null;           // drag-to-reorder
     let pollTimer = null;
     const POLL_MS = 10000;             // cross-client sync interval
+
+    // Per-column sort + filter state (table upgrade).
+    // sortState.key is the column key; sortState.dir is 'asc' or 'desc'.
+    // colFilters[key] is the per-column substring/value filter.
+    let sortState = { key: 'overallPriority', dir: 'asc' };
+    const colFilters = {
+        title: '', project: '', status: '', effort: '',
+        deadline: '', assignee: '', tags: ''
+    };
 
     // --- Helpers ---
 
@@ -217,6 +227,23 @@ docker compose up -d</pre>
             todos = todos.filter(t => t.projectId === projectId);
         }
 
+        // Bucket filter — sidebar's main views. 'all' and 'by-project' don't
+        // restrict; the other buckets apply a hard filter.
+        const today = todayLocalISO();
+        const hasTag = (t, tag) => (t.tags || []).some(x => x.toLowerCase() === tag);
+        const isSnoozed = t => t.snoozeUntil && t.snoozeUntil > today;
+        if (currentBucket === 'now') {
+            // Open, not snoozed
+            todos = todos.filter(t => t.status !== 'Done' && t.status !== 'Cancelled' && !isSnoozed(t));
+        } else if (currentBucket === 'delegatable') {
+            todos = todos.filter(t => hasTag(t, 'delegatable'));
+        } else if (currentBucket === 'watching') {
+            todos = todos.filter(t => hasTag(t, 'watching'));
+        } else if (currentBucket === 'snoozed') {
+            todos = todos.filter(t => isSnoozed(t));
+        }
+        // 'all' and 'by-project': no extra filtering here
+
         // Daily view: show done since last working day + open items planned for today
         const dailyMode = document.getElementById('filter-daily').checked;
         if (dailyMode) {
@@ -285,59 +312,120 @@ docker compose up -d</pre>
     }
 
     // --- Build a todo table ---
-    function buildTable(todos, showProject, sortBy) {
-        // Sort: open items (priority 1..N) first, then off-queue items
-        // (priority 0 — Done/Cancelled) at the bottom, sorted by
-        // completedDate DESC so most recently finished is first.
-        const key = sortBy === 'project' ? 'projectPriority' : 'overallPriority';
+    //
+    // Pipeline: sort (per sortState) → per-column filter (per colFilters) → render.
+    // Renders three rows in <thead>: column headers (clickable to sort) and a
+    // filter row (text input or enum dropdown per column). Action column is
+    // pinned right and shows context-aware buttons (snooze hidden for off-queue).
+    function buildTable(todos, showProject, defaultSortKey) {
+        // Default sort if the user hasn't picked one yet for this view.
+        // 'project' view groups should default to projectPriority, otherwise overallPriority.
+        if (defaultSortKey === 'project' && sortState.key === 'overallPriority') {
+            // user hasn't overridden — default to projectPriority for this view
+            // (we don't mutate sortState; just compute locally for default ordering)
+        }
+        const effectiveKey = (defaultSortKey === 'project' && sortState.key === 'overallPriority')
+            ? 'projectPriority' : sortState.key;
+        const effectiveDir = sortState.dir;
+
+        // Sort: open items first, then off-queue (Done/Cancelled) at bottom.
+        // Within open: by chosen column. Within off-queue: by completedDate desc.
         const isOff = t => t.status === 'Done' || t.status === 'Cancelled';
         todos = todos.slice().sort((a, b) => {
             const aOff = isOff(a), bOff = isOff(b);
-            if (aOff !== bOff) return aOff ? 1 : -1;            // open before off
-            if (aOff && bOff) {
-                return String(b.completedDate || '').localeCompare(String(a.completedDate || ''));
-            }
-            return (a[key] || 999) - (b[key] || 999);
+            if (aOff !== bOff) return aOff ? 1 : -1;
+            if (aOff && bOff) return String(b.completedDate || '').localeCompare(String(a.completedDate || ''));
+            return compareByKey(a, b, effectiveKey, effectiveDir);
         });
+
+        // Per-column filters (applied AFTER global filters in getFilteredTodos).
+        // Each one is a substring match (case-insensitive) or exact for enums.
+        const f = colFilters;
+        if (f.title)    todos = todos.filter(t => (t.title || '').toLowerCase().includes(f.title.toLowerCase()));
+        if (f.project)  todos = todos.filter(t => getProjectName(t.projectId).toLowerCase().includes(f.project.toLowerCase()));
+        if (f.status)   todos = todos.filter(t => t.status === f.status);
+        if (f.effort)   todos = todos.filter(t => (t.effort || '') === f.effort);
+        if (f.deadline) todos = todos.filter(t => (t.deadline || '').includes(f.deadline));
+        if (f.assignee) todos = todos.filter(t => (t.assignee || '').toLowerCase().includes(f.assignee.toLowerCase()));
+        if (f.tags)     todos = todos.filter(t => (t.tags || []).some(tag => tag.toLowerCase().includes(f.tags.toLowerCase())));
+
         if (todos.length === 0) {
-            return '<div class="empty-state"><p>No to-do items yet. Click "+ New To-Do" to get started.</p></div>';
+            return '<div class="empty-state"><p>No matching to-do items. Try clearing filters, or click "+ New To-Do".</p></div>';
         }
 
         const statusOptions = ['To Do', 'In Progress', 'Waiting on Client', 'Waiting on Me', 'Waiting on Third Party', 'On Hold', 'In Review', 'Done', 'Cancelled'];
         const effortOptions = ['', 'small', 'medium', 'large'];
 
+        // Header cell with sort indicator. Clicking toggles asc/desc.
+        const sortIndicator = (key) => {
+            if (sortState.key !== key) return '<span class="sort-indicator">↕</span>';
+            return sortState.dir === 'asc'
+                ? '<span class="sort-indicator active">↑</span>'
+                : '<span class="sort-indicator active">↓</span>';
+        };
+        const th = (key, label, attrs = '') =>
+            `<th class="sortable" ${attrs} onclick="App.sortBy('${key}')">${label} ${sortIndicator(key)}</th>`;
+
+        // Filter cells. Text input or enum dropdown.
+        const tfText = (key, placeholder = '') =>
+            `<th><input type="text" class="col-filter" value="${escapeAttr(colFilters[key])}" placeholder="${escapeAttr(placeholder)}" oninput="App.setColFilter('${key}', this.value)"></th>`;
+        const tfEnum = (key, options) =>
+            `<th><select class="col-filter" onchange="App.setColFilter('${key}', this.value)">
+                <option value="">all</option>
+                ${options.map(o => `<option value="${escapeAttr(o)}" ${colFilters[key] === o ? 'selected' : ''}>${escapeAttr(o || '—')}</option>`).join('')}
+            </select></th>`;
+
         let html = `<table class="todo-table">
-            <thead><tr>
-                <th style="width:30px"></th>
-                <th style="width:30px" title="Overall Priority">O#</th>
-                <th style="width:30px" title="Project Priority">P#</th>
-                <th>Title</th>
-                ${showProject ? '<th>Project</th>' : ''}
-                <th>Status</th>
-                <th>Effort</th>
-                <th>Deadline</th>
-                <th>Assignee</th>
-                <th>Notes</th>
-                <th>Tags</th>
-                <th style="width:80px">Actions</th>
-            </tr></thead><tbody>`;
+            <thead>
+                <tr class="header-row">
+                    <th style="width:30px"></th>
+                    ${th('overallPriority', 'O#', 'style="width:34px" title="Overall Priority"')}
+                    ${th('projectPriority', 'P#', 'style="width:34px" title="Project Priority"')}
+                    ${th('title', 'Title')}
+                    ${showProject ? th('project', 'Project') : ''}
+                    ${th('status', 'Status')}
+                    ${th('effort', 'Effort')}
+                    ${th('deadline', 'Deadline')}
+                    ${th('assignee', 'Assignee')}
+                    <th>Notes</th>
+                    <th>Tags</th>
+                    <th style="width:120px">Actions</th>
+                </tr>
+                <tr class="filter-row">
+                    <th></th>
+                    <th></th>
+                    <th></th>
+                    ${tfText('title', 'filter…')}
+                    ${showProject ? tfText('project', 'filter…') : ''}
+                    ${tfEnum('status', statusOptions)}
+                    ${tfEnum('effort', effortOptions)}
+                    ${tfText('deadline', 'YYYY-MM')}
+                    ${tfText('assignee', 'filter…')}
+                    <th></th>
+                    ${tfText('tags', 'tag…')}
+                    <th></th>
+                </tr>
+            </thead><tbody>`;
 
         for (const todo of todos) {
             const safeId = escapeAttr(todo.id);
-            const rowClass = todo.status === 'Done' ? 'done' : (todo.status === 'Cancelled' ? 'cancelled' : '');
-            // Status inline select
+            const off = isOff(todo);
+            const snoozed = todo.snoozeUntil && todo.snoozeUntil > todayLocalISO();
+            const rowClass = [
+                off ? (todo.status === 'Done' ? 'done' : 'cancelled') : '',
+                snoozed ? 'snoozed' : ''
+            ].filter(Boolean).join(' ');
+
             const statusSelect = `<select class="inline-select" onchange="App.inlineUpdate(this.closest('tr').dataset.id, 'status', this.value)">
                 ${statusOptions.map(s => `<option value="${s}" ${todo.status === s ? 'selected' : ''}>${s}</option>`).join('')}
             </select>`;
 
-            // Effort inline select
             const effortSelect = `<select class="inline-select" onchange="App.inlineUpdate(this.closest('tr').dataset.id, 'effort', this.value)">
                 ${effortOptions.map(e => `<option value="${e}" ${todo.effort === e ? 'selected' : ''}>${e ? e.charAt(0).toUpperCase() + e.slice(1) : '—'}</option>`).join('')}
             </select>`;
 
-            // Deadline inline input — highlight red if overdue and not done
             let isOverdue = false;
-            if (todo.deadline && todo.status !== 'Done' && todo.status !== 'Cancelled') {
+            if (todo.deadline && !off) {
                 const deadlineDate = new Date(todo.deadline + 'T00:00:00');
                 const today = new Date();
                 today.setHours(0, 0, 0, 0);
@@ -345,8 +433,26 @@ docker compose up -d</pre>
             }
             const deadlineInput = `<input type="date" class="inline-input ${isOverdue ? 'overdue' : ''}" value="${escapeAttr(todo.deadline || '')}" onchange="App.inlineUpdate(this.closest('tr').dataset.id, 'deadline', this.value)" style="width:130px">`;
 
-            // Assignee inline input
             const assigneeInput = `<input type="text" class="inline-input" value="${escapeAttr(todo.assignee)}" placeholder="—" onblur="App.inlineUpdate(this.closest('tr').dataset.id, 'assignee', this.value)" onkeydown="if(event.key==='Enter'){this.blur()}" style="width:100px">`;
+
+            // Action column — context-aware:
+            // - Snooze only for open, awake items
+            // - Wake only for snoozed items
+            // - Edit/Delete always
+            const actions = [];
+            if (!off) {
+                if (snoozed) {
+                    actions.push(`<button class="btn-icon" onclick="App.unsnoozeTodo('${safeId}')" title="Wake (currently snoozed until ${escapeAttr(todo.snoozeUntil)})">⏰</button>`);
+                } else {
+                    actions.push(`<button class="btn-icon" onclick="App.snoozeTodo('${safeId}')" title="Snooze">💤</button>`);
+                }
+            }
+            actions.push(`<button class="btn-icon" onclick="App.openTodoModal('${safeId}')" title="Edit">✏️</button>`);
+            actions.push(`<button class="btn-icon" onclick="App.deleteTodo('${safeId}')" title="Delete">🗑️</button>`);
+
+            const snoozeBadge = snoozed
+                ? `<span class="snooze-badge" title="Snoozed until ${escapeAttr(todo.snoozeUntil)}">💤 ${escapeHTML(todo.snoozeUntil)}</span>`
+                : '';
 
             html += `<tr class="${rowClass}" draggable="true"
                 data-id="${safeId}"
@@ -358,7 +464,7 @@ docker compose up -d</pre>
                 <td><input type="checkbox" ${todo.status === 'Done' ? 'checked' : ''} onchange="App.toggleDone(this.closest('tr').dataset.id)" title="Mark as done"></td>
                 <td style="color:#aaa">${todo.overallPriority || '—'}</td>
                 <td style="color:#aaa">${todo.projectPriority || '—'}</td>
-                <td><strong>${escapeHTML(todo.title)}</strong></td>
+                <td><strong>${escapeHTML(todo.title)}</strong> ${snoozeBadge}</td>
                 ${showProject ? `<td>${escapeHTML(getProjectName(todo.projectId))}</td>` : ''}
                 <td>${statusSelect}</td>
                 <td>${effortSelect}</td>
@@ -366,15 +472,82 @@ docker compose up -d</pre>
                 <td>${assigneeInput}</td>
                 <td class="notes-cell clickable-cell" tabindex="0" onclick="App.editNotes(this, this.closest('tr').dataset.id)" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();App.editNotes(this,this.closest('tr').dataset.id)}">${todo.notes ? escapeHTML(todo.notes) : '—'}</td>
                 <td>${(todo.tags || []).map(t => `<span class="tag">${escapeHTML(t)}</span>`).join(' ')}</td>
-                <td>
-                    <button class="btn-icon" onclick="App.openTodoModal(this.closest('tr').dataset.id)" title="Edit">✏️</button>
-                    <button class="btn-icon" onclick="App.deleteTodo(this.closest('tr').dataset.id)" title="Delete">🗑️</button>
-                </td>
+                <td class="actions-cell">${actions.join('')}</td>
             </tr>`;
         }
 
         html += '</tbody></table>';
         return html;
+    }
+
+    function todayLocalISO() {
+        const d = new Date();
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+
+    // Generic comparator for the header-sort feature.
+    // Numbers compare numerically; everything else as case-insensitive strings.
+    function compareByKey(a, b, key, dir) {
+        let av, bv;
+        if (key === 'project') {
+            av = getProjectName(a.projectId);
+            bv = getProjectName(b.projectId);
+        } else {
+            av = a[key];
+            bv = b[key];
+        }
+        if (typeof av === 'number' && typeof bv === 'number') {
+            return dir === 'asc' ? (av || 999) - (bv || 999) : (bv || 999) - (av || 999);
+        }
+        const cmp = String(av || '').toLowerCase().localeCompare(String(bv || '').toLowerCase());
+        return dir === 'asc' ? cmp : -cmp;
+    }
+
+    function sortBy(key) {
+        if (sortState.key === key) {
+            sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
+        } else {
+            sortState.key = key;
+            sortState.dir = 'asc';
+        }
+        render();
+    }
+
+    function setColFilter(key, value) {
+        colFilters[key] = value;
+        render();
+    }
+
+    async function snoozeTodo(id) {
+        const until = prompt('Snooze until (YYYY-MM-DD)? Leave empty for tomorrow:', '') || '';
+        try {
+            const res = await fetch(`/api/todos/${encodeURIComponent(id)}/snooze`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ until })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+            await reloadState();
+            render();
+        } catch (e) {
+            reportError('Failed to snooze', e);
+        }
+    }
+
+    async function unsnoozeTodo(id) {
+        try {
+            const res = await fetch(`/api/todos/${encodeURIComponent(id)}/unsnooze`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+            await reloadState();
+            render();
+        } catch (e) {
+            reportError('Failed to unsnooze', e);
+        }
     }
 
     // --- Render ---
@@ -394,10 +567,9 @@ docker compose up -d</pre>
             </li>`;
         }).join('');
 
-        // View toggle — "All Items" is only active when no project is selected
+        // Bucket toggle — highlight the active sidebar bucket
         document.querySelectorAll('#view-toggle li').forEach(li => {
-            const isActive = li.dataset.view === currentView && !(li.dataset.view === 'all' && selectedProjectId);
-            li.classList.toggle('active', isActive);
+            li.classList.toggle('active', li.dataset.bucket === currentBucket && !selectedProjectId);
         });
 
         // Main title
@@ -406,13 +578,22 @@ docker compose up -d</pre>
         // Main content
         const container = document.getElementById('main-content');
 
+        const bucketLabel = {
+            now: '📋 Now',
+            all: 'All items',
+            'by-project': 'By project',
+            delegatable: '🤝 Delegatable',
+            watching: '👀 Watching',
+            snoozed: '💤 Snoozed'
+        }[currentBucket] || 'All items';
+
         if (currentView === 'all') {
             if (selectedProjectId) {
-                titleEl.textContent = getProjectName(selectedProjectId);
+                titleEl.textContent = `${getProjectName(selectedProjectId)} — ${bucketLabel}`;
                 const todos = getFilteredTodos(selectedProjectId);
                 container.innerHTML = buildTable(todos, false, 'project');
             } else {
-                titleEl.textContent = 'All Items';
+                titleEl.textContent = bucketLabel;
                 const todos = getFilteredTodos(null);
                 container.innerHTML = buildTable(todos, true, 'overall');
             }
@@ -448,8 +629,22 @@ docker compose up -d</pre>
 
     // --- Views ---
     function setView(view) {
+        // Backward-compatibility: 'all' / 'by-project' map to currentView.
         currentView = view;
         selectedProjectId = null;
+        render();
+    }
+
+    // Sidebar bucket switcher. Maps the bucket onto currentView for the
+    // existing render branches (all-list vs grouped-by-project).
+    function setBucket(bucket) {
+        currentBucket = bucket;
+        selectedProjectId = null;
+        if (bucket === 'by-project') {
+            currentView = 'by-project';
+        } else {
+            currentView = 'all';
+        }
         render();
     }
 
@@ -541,6 +736,7 @@ docker compose up -d</pre>
             document.getElementById('todo-deadline').value = todo.deadline || '';
             document.getElementById('todo-assignee').value = todo.assignee || '';
             document.getElementById('todo-notes').value = todo.notes || '';
+            document.getElementById('todo-snooze-until').value = todo.snoozeUntil || '';
             editingTodoTags = [...(todo.tags || [])];
             setRecurringFormValues(todo);
         } else {
@@ -553,6 +749,7 @@ docker compose up -d</pre>
             document.getElementById('todo-deadline').value = '';
             document.getElementById('todo-assignee').value = '';
             document.getElementById('todo-notes').value = '';
+            document.getElementById('todo-snooze-until').value = '';
             editingTodoTags = [];
             setRecurringFormValues({ isRecurring: false, recurringWeeks: 1, recurringDays: [] });
         }
@@ -584,6 +781,7 @@ docker compose up -d</pre>
             assignee: document.getElementById('todo-assignee').value.trim(),
             notes: document.getElementById('todo-notes').value,
             tags: [...editingTodoTags],
+            snoozeUntil: document.getElementById('todo-snooze-until').value || null,
             isRecurring: recurring.isRecurring,
             recurringWeeks: recurring.recurringWeeks,
             recurringDays: recurring.recurringDays
@@ -996,6 +1194,11 @@ docker compose up -d</pre>
         exportData,
         importData,
         dismissBackupBanner,
-        retryInit
+        retryInit,
+        sortBy,
+        setColFilter,
+        snoozeTodo,
+        unsnoozeTodo,
+        setBucket
     };
 })();
