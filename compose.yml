@@ -1,0 +1,15 @@
+services:
+  todo:
+    build:
+      context: ./server
+    container_name: todo-app
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8084:8084"
+    volumes:
+      - ./data:/app/data
+      - ./:/app/public:ro
+    environment:
+      PORT: 8084
+      DATA_DIR: /app/data
+      PUBLIC_DIR: /app/public

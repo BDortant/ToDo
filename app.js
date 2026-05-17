@@ -1,56 +1,71 @@
 // =============================================================
-// STORAGE SERVICE
-// All data access goes through this module. Currently uses
-// localStorage. Designed so File System Access API can replace
-// the internals without changing the rest of the app.
+// STORAGE SERVICE — HTTP API client
+// All data access goes through this module. The backend is a
+// small Node + SQLite server (see /server) that owns the
+// authoritative state. Per-operation calls let the PocketDev
+// chat tool and the browser UI mutate the same data safely.
 // =============================================================
 const StorageService = (() => {
-    const STORAGE_KEY = 'todo_app_data';
+    // Same-origin: the Node server hosts both /api and the static frontend.
+    // Override via window.TODO_API_BASE if you ever split them.
+    const BASE = (typeof window !== 'undefined' && window.TODO_API_BASE) || '';
 
-    // Default data structure
-    function defaultData() {
-        return {
-            projects: [],
-            todos: [],
-            lastBackup: null
-        };
+    async function call(method, path, body) {
+        const opts = { method, headers: { 'Accept': 'application/json' } };
+        if (body !== undefined) {
+            opts.headers['Content-Type'] = 'application/json';
+            opts.body = JSON.stringify(body);
+        }
+        const res = await fetch(BASE + path, opts);
+        const text = await res.text();
+        const data = text ? JSON.parse(text) : null;
+        if (!res.ok) {
+            const msg = (data && data.error) ? data.error : `HTTP ${res.status}`;
+            const err = new Error(msg);
+            err.status = res.status;
+            throw err;
+        }
+        return data;
     }
 
     return {
-        // Load all data from storage
-        load() {
-            const raw = localStorage.getItem(STORAGE_KEY);
-            if (!raw) return defaultData();
-            try {
-                return JSON.parse(raw);
-            } catch {
-                return defaultData();
-            }
-        },
+        // --- Bulk ---
+        loadAll() { return call('GET', '/api/state'); },
+        exportAll() { return call('GET', '/api/export'); },
+        importAll(state) { return call('POST', '/api/import', state); },
 
-        // Save all data to storage
-        save(data) {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-        },
+        // --- Projects ---
+        createProject(p) { return call('POST', '/api/projects', p); },
+        patchProject(id, patch) { return call('PATCH', `/api/projects/${encodeURIComponent(id)}`, patch); },
+        deleteProject(id) { return call('DELETE', `/api/projects/${encodeURIComponent(id)}`); },
 
-        // Export data as a JSON string (for file download)
-        exportJSON(data) {
-            return JSON.stringify(data, null, 2);
-        },
+        // --- Todos ---
+        createTodo(t) { return call('POST', '/api/todos', t); },
+        patchTodo(id, patch) { return call('PATCH', `/api/todos/${encodeURIComponent(id)}`, patch); },
+        deleteTodo(id) { return call('DELETE', `/api/todos/${encodeURIComponent(id)}`); },
+        reorderTodos(updates) { return call('POST', '/api/todos/reorder', updates); },
+        cleanup() { return call('POST', '/api/todos/cleanup'); },
 
-        // Parse imported JSON string back into data
-        importJSON(jsonString) {
-            return JSON.parse(jsonString);
-        },
+        // --- Meta ---
+        setLastBackup() { return call('POST', '/api/meta/last-backup', { iso: new Date().toISOString() }); }
+    };
+})();
 
-        // Get/set last backup timestamp
-        getLastBackup(data) {
-            return data.lastBackup;
-        },
-
-        setLastBackup(data, timestamp) {
-            data.lastBackup = timestamp;
-        }
+// API status indicator — surfaces backend health in the header
+const ApiStatus = (() => {
+    let ok = true;
+    function set(newOk) {
+        if (ok === newOk) return;
+        ok = newOk;
+        const el = document.getElementById('api-status');
+        if (!el) return;
+        el.classList.toggle('online', ok);
+        el.classList.toggle('offline', !ok);
+        el.title = ok ? 'Backend online' : 'Backend unreachable — changes will fail until reconnected';
+    }
+    return {
+        markOk() { set(true); },
+        markFail() { set(false); }
     };
 })();
 
@@ -59,20 +74,46 @@ const StorageService = (() => {
 // APP — State, logic, and rendering
 // =============================================================
 const App = (() => {
-    let data = StorageService.load();
+    let data = { projects: [], todos: [], lastBackup: null };
 
     let currentView = 'all';           // 'all' or 'by-project'
     let selectedProjectId = null;      // filter in sidebar
     let editingTodoTags = [];          // temp tags for the form
     let draggedRowId = null;           // drag-to-reorder
+    let pollTimer = null;
+    const POLL_MS = 10000;             // cross-client sync interval
 
     // --- Helpers ---
-    function generateId() {
-        return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
+    async function reloadState() {
+        try {
+            data = await StorageService.loadAll();
+            ApiStatus.markOk();
+        } catch (e) {
+            ApiStatus.markFail();
+            console.error('Failed to load state:', e);
+        }
     }
 
-    function persist() {
-        StorageService.save(data);
+    function reportError(prefix, e) {
+        ApiStatus.markFail();
+        console.error(prefix, e);
+        alert(`${prefix}: ${e.message || e}`);
+    }
+
+    function startPolling() {
+        if (pollTimer) clearInterval(pollTimer);
+        pollTimer = setInterval(async () => {
+            if (document.hidden) return; // pause when tab not visible
+            try {
+                const fresh = await StorageService.loadAll();
+                data = fresh;
+                ApiStatus.markOk();
+                render();
+            } catch (e) {
+                ApiStatus.markFail();
+            }
+        }, POLL_MS);
     }
 
     function statusToBadgeClass(status) {
@@ -378,37 +419,39 @@ const App = (() => {
         document.getElementById('project-modal').classList.remove('open');
     }
 
-    function saveProject(e) {
+    async function saveProject(e) {
         e.preventDefault();
         const id = document.getElementById('project-id').value;
         const name = document.getElementById('project-name').value.trim();
         if (!name) return;
 
-        if (id) {
-            const project = data.projects.find(p => p.id === id);
-            project.name = name;
-        } else {
-            data.projects.push({ id: generateId(), name });
+        try {
+            if (id) {
+                await StorageService.patchProject(id, { name });
+            } else {
+                await StorageService.createProject({ name });
+            }
+            await reloadState();
+            closeProjectModal();
+            render();
+        } catch (e) {
+            reportError('Failed to save project', e);
         }
-
-        persist();
-        closeProjectModal();
-        render();
     }
 
-    function deleteProject(id) {
+    async function deleteProject(id) {
         const project = data.projects.find(p => p.id === id);
+        if (!project) return;
         if (!confirm(`Delete project "${project.name}"? Items in this project will become unassigned.`)) return;
 
-        data.projects = data.projects.filter(p => p.id !== id);
-        // Unassign todos from this project
-        data.todos.forEach(t => {
-            if (t.projectId === id) t.projectId = '';
-        });
-
-        if (selectedProjectId === id) selectedProjectId = null;
-        persist();
-        render();
+        try {
+            await StorageService.deleteProject(id);
+            if (selectedProjectId === id) selectedProjectId = null;
+            await reloadState();
+            render();
+        } catch (e) {
+            reportError('Failed to delete project', e);
+        }
     }
 
     // --- Todo CRUD ---
@@ -457,79 +500,55 @@ const App = (() => {
         document.getElementById('todo-modal').classList.remove('open');
     }
 
-    function saveTodo(e) {
+    async function saveTodo(e) {
         e.preventDefault();
         const id = document.getElementById('todo-id').value;
         const title = document.getElementById('todo-title').value.trim();
         if (!title) return;
 
         const newStatus = document.getElementById('todo-status').value;
+        const recurring = getRecurringFormValues();
 
-        if (id) {
-            const todo = data.todos.find(t => t.id === id);
-            const oldStatus = todo.status;
-            todo.title = title;
-            todo.status = newStatus;
-            // If project changed, put it at the end of the new project's list
-            const newProjectId = document.getElementById('todo-project').value;
-            if (todo.projectId !== newProjectId) {
-                todo.projectPriority = data.todos.filter(t => t.projectId === newProjectId).length + 1;
+        const payload = {
+            title,
+            projectId: document.getElementById('todo-project').value,
+            status: newStatus,
+            effort: document.getElementById('todo-effort').value,
+            deadline: document.getElementById('todo-deadline').value,
+            assignee: document.getElementById('todo-assignee').value.trim(),
+            notes: document.getElementById('todo-notes').value,
+            tags: [...editingTodoTags],
+            isRecurring: recurring.isRecurring,
+            recurringWeeks: recurring.recurringWeeks,
+            recurringDays: recurring.recurringDays
+        };
+
+        try {
+            if (id) {
+                await StorageService.patchTodo(id, payload);
+            } else {
+                await StorageService.createTodo(payload);
             }
-            todo.projectId = newProjectId;
-            todo.effort = document.getElementById('todo-effort').value;
-            todo.deadline = document.getElementById('todo-deadline').value;
-            todo.assignee = document.getElementById('todo-assignee').value.trim();
-            todo.notes = document.getElementById('todo-notes').value;
-            todo.tags = [...editingTodoTags];
-
-            const recurring = getRecurringFormValues();
-            todo.isRecurring = recurring.isRecurring;
-            todo.recurringWeeks = recurring.recurringWeeks;
-            todo.recurringDays = recurring.recurringDays;
-
-            // Auto-set completedDate when status changes to Done
-            if (newStatus === 'Done' && oldStatus !== 'Done') {
-                todo.completedDate = new Date().toISOString();
-                if (todo.isRecurring) spawnNextRecurrence(todo);
-            } else if (newStatus !== 'Done') {
-                todo.completedDate = null;
-            }
-        } else {
-            data.todos.push({
-                id: generateId(),
-                title,
-                projectId: document.getElementById('todo-project').value,
-                status: newStatus,
-                overallPriority: data.todos.length + 1,
-                projectPriority: data.todos.filter(t => t.projectId === document.getElementById('todo-project').value).length + 1,
-                effort: document.getElementById('todo-effort').value,
-                deadline: document.getElementById('todo-deadline').value,
-                assignee: document.getElementById('todo-assignee').value.trim(),
-                notes: document.getElementById('todo-notes').value,
-                tags: [...editingTodoTags],
-                createdDate: new Date().toISOString(),
-                completedDate: newStatus === 'Done' ? new Date().toISOString() : null,
-                ...getRecurringFormValues()
-            });
-
-            const newTodo = data.todos[data.todos.length - 1];
-            if (newStatus === 'Done' && newTodo.isRecurring) {
-                spawnNextRecurrence(newTodo);
-            }
+            await reloadState();
+            closeTodoModal();
+            render();
+        } catch (e) {
+            reportError('Failed to save todo', e);
         }
-
-        persist();
-        closeTodoModal();
-        render();
     }
 
-    function deleteTodo(id) {
+    async function deleteTodo(id) {
         const todo = data.todos.find(t => t.id === id);
+        if (!todo) return;
         if (!confirm(`Delete "${todo.title}"?`)) return;
 
-        data.todos = data.todos.filter(t => t.id !== id);
-        persist();
-        render();
+        try {
+            await StorageService.deleteTodo(id);
+            await reloadState();
+            render();
+        } catch (e) {
+            reportError('Failed to delete todo', e);
+        }
     }
 
     function toggleRecurring() {
@@ -559,78 +578,10 @@ const App = (() => {
         document.getElementById('recurring-section').classList.toggle('open', isRecurring);
     }
 
-    function toLocalDateString(date) {
-        const y = date.getFullYear();
-        const m = String(date.getMonth() + 1).padStart(2, '0');
-        const d = String(date.getDate()).padStart(2, '0');
-        return `${y}-${m}-${d}`;
-    }
-
-    function getNextMatchingDay(recurringDays) {
-        const jsDayMap = [1, 2, 3, 4, 5, 6, 0]; // our 0=Mon..6=Sun -> JS getDay()
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        for (let i = 0; i < 7; i++) {
-            const candidate = new Date(today);
-            candidate.setDate(candidate.getDate() + i);
-            if (recurringDays.some(d => jsDayMap[d] === candidate.getDay())) {
-                return toLocalDateString(candidate);
-            }
-        }
-        return '';
-    }
-
-    function spawnNextRecurrence(todo) {
-        if (!todo.isRecurring || !todo.recurringDays || todo.recurringDays.length === 0) return;
-
-        // Normalize: ensure recurring todo has a deadline before advancing
-        if (!todo.deadline) {
-            todo.deadline = getNextMatchingDay(todo.recurringDays);
-        }
-
-        let newDeadline = '';
-
-        if (todo.deadline) {
-            const base = new Date(todo.deadline + 'T00:00:00');
-            // Convert JS getDay() (0=Sun..6=Sat) into app's day index (0=Mon..6=Sun)
-            const baseAppDow = (base.getDay() + 6) % 7;
-            // Guard against malformed stored values (0, undefined) that would land in the past
-            const weeks = Number.isInteger(todo.recurringWeeks) && todo.recurringWeeks > 0 ? todo.recurringWeeks : 1;
-            const sortedDays = [...todo.recurringDays].sort((a, b) => a - b);
-            const nextInWeek = sortedDays.find(d => d > baseAppDow);
-
-            const candidate = new Date(base);
-            if (nextInWeek !== undefined) {
-                candidate.setDate(candidate.getDate() + (nextInWeek - baseAppDow));
-            } else {
-                // No more selected days this week — jump to the first selected day N weeks ahead
-                const offset = -baseAppDow + weeks * 7 + sortedDays[0];
-                candidate.setDate(candidate.getDate() + offset);
-            }
-            newDeadline = toLocalDateString(candidate);
-        } else {
-            newDeadline = getNextMatchingDay(todo.recurringDays);
-        }
-
-        data.todos.push({
-            id: generateId(),
-            title: todo.title,
-            projectId: todo.projectId,
-            status: 'To Do',
-            overallPriority: data.todos.length + 1,
-            projectPriority: data.todos.filter(t => t.projectId === todo.projectId).length + 1,
-            effort: todo.effort,
-            deadline: newDeadline,
-            assignee: todo.assignee,
-            notes: todo.notes,
-            tags: [...(todo.tags || [])],
-            createdDate: new Date().toISOString(),
-            completedDate: null,
-            isRecurring: true,
-            recurringWeeks: todo.recurringWeeks,
-            recurringDays: [...todo.recurringDays]
-        });
-    }
+    // Recurring-task spawn lives on the server (see server/db.js spawnNextRecurrence).
+    // The server runs it inside the same transaction as the status change, so any client
+    // that flips a recurring todo to Done — browser UI or PocketDev chat — gets the new
+    // occurrence on the very next state reload.
 
     function toggleFilter(which) {
         const hideDone = document.getElementById('filter-hide-done');
@@ -646,29 +597,17 @@ const App = (() => {
         render();
     }
 
-    function inlineUpdate(id, field, value) {
+    async function inlineUpdate(id, field, value) {
         const todo = data.todos.find(t => t.id === id);
         if (!todo) return;
 
-        if (field === 'status') {
-            const oldStatus = todo.status;
-            todo.status = value;
-            if (value === 'Done' && oldStatus !== 'Done') {
-                todo.previousStatus = oldStatus;
-                todo.completedDate = new Date().toISOString();
-                if (todo.isRecurring) spawnNextRecurrence(todo);
-                movePriorityForDone(todo, true);
-            } else if (value !== 'Done' && oldStatus === 'Done') {
-                todo.completedDate = null;
-                delete todo.previousStatus;
-                movePriorityForDone(todo, false);
-            }
-        } else {
-            todo[field] = value;
+        try {
+            await StorageService.patchTodo(id, { [field]: value });
+            await reloadState();
+            render();
+        } catch (e) {
+            reportError('Failed to update todo', e);
         }
-
-        persist();
-        render();
     }
 
     function editNotes(cell, id) {
@@ -694,67 +633,21 @@ const App = (() => {
         });
     }
 
-    // Move a done item to the top of priority lists, or restore when un-done
-    function movePriorityForDone(todo, markingDone) {
-        if (markingDone) {
-            // Save current priorities so we can restore later
-            todo.previousOverallPriority = todo.overallPriority;
-            todo.previousProjectPriority = todo.projectPriority;
+    // Priority shift on Done lives on the server (see server/db.js shiftPriorityForDone).
+    // The server records previous priorities so an un-done restores correctly, even when
+    // the toggle happens from a different client than the original Done.
 
-            // Move to top: set to 0, shift others above the old position down to fill gap
-            const oldOverall = todo.overallPriority;
-            data.todos.forEach(t => {
-                if (t !== todo && t.overallPriority > oldOverall) t.overallPriority--;
-            });
-            todo.overallPriority = 0;
-
-            if (todo.projectId) {
-                const oldProject = todo.projectPriority;
-                data.todos.forEach(t => {
-                    if (t !== todo && t.projectId === todo.projectId && t.projectPriority > oldProject) t.projectPriority--;
-                });
-                todo.projectPriority = 0;
-            }
-        } else {
-            // Restore previous priorities, shifting others to make room
-            const targetOverall = todo.previousOverallPriority || 1;
-            data.todos.forEach(t => {
-                if (t !== todo && t.overallPriority >= targetOverall) t.overallPriority++;
-            });
-            todo.overallPriority = targetOverall;
-
-            if (todo.projectId) {
-                const targetProject = todo.previousProjectPriority || 1;
-                data.todos.forEach(t => {
-                    if (t !== todo && t.projectId === todo.projectId && t.projectPriority >= targetProject) t.projectPriority++;
-                });
-                todo.projectPriority = targetProject;
-            }
-
-            delete todo.previousOverallPriority;
-            delete todo.previousProjectPriority;
-        }
-    }
-
-    function toggleDone(id) {
+    async function toggleDone(id) {
         const todo = data.todos.find(t => t.id === id);
         if (!todo) return;
-
-        if (todo.status === 'Done') {
-            todo.status = todo.previousStatus || 'To Do';
-            todo.completedDate = null;
-            delete todo.previousStatus;
-            movePriorityForDone(todo, false);
-        } else {
-            todo.previousStatus = todo.status;
-            todo.status = 'Done';
-            todo.completedDate = new Date().toISOString();
-            if (todo.isRecurring) spawnNextRecurrence(todo);
-            movePriorityForDone(todo, true);
+        const newStatus = todo.status === 'Done' ? (todo.previousStatus || 'To Do') : 'Done';
+        try {
+            await StorageService.patchTodo(id, { status: newStatus });
+            await reloadState();
+            render();
+        } catch (e) {
+            reportError('Failed to toggle done', e);
         }
-
-        persist();
-        render();
     }
 
     // --- Tags ---
@@ -810,7 +703,7 @@ const App = (() => {
         e.currentTarget.classList.remove('drag-over-top', 'drag-over-bottom');
     }
 
-    function onDrop(e) {
+    async function onDrop(e) {
         e.preventDefault();
         e.currentTarget.classList.remove('drag-over-top', 'drag-over-bottom');
         const targetId = e.currentTarget.dataset.id;
@@ -820,33 +713,42 @@ const App = (() => {
         const targetTodo = data.todos.find(t => t.id === targetId);
         if (!draggedTodo || !targetTodo) return;
 
-        // Insert the dragged item at the target position, shifting others accordingly
         const useProjectPriority = currentView === 'by-project' || selectedProjectId;
         const key = useProjectPriority ? 'projectPriority' : 'overallPriority';
 
         const fromPos = draggedTodo[key];
         const toPos = targetTodo[key];
 
-        // Get all todos that participate in this priority space
         const affected = useProjectPriority
             ? data.todos.filter(t => t.projectId === draggedTodo.projectId)
             : data.todos;
 
+        // Compute the new priorities locally, then send a single bulk reorder request.
+        const updates = [];
         if (fromPos < toPos) {
-            // Dragging down: shift items between fromPos+1 and toPos up by 1
             affected.forEach(t => {
-                if (t[key] > fromPos && t[key] <= toPos) t[key]--;
+                if (t === draggedTodo) return;
+                if (t[key] > fromPos && t[key] <= toPos) {
+                    updates.push({ id: t.id, [key]: t[key] - 1 });
+                }
             });
         } else {
-            // Dragging up: shift items between toPos and fromPos-1 down by 1
             affected.forEach(t => {
-                if (t[key] >= toPos && t[key] < fromPos) t[key]++;
+                if (t === draggedTodo) return;
+                if (t[key] >= toPos && t[key] < fromPos) {
+                    updates.push({ id: t.id, [key]: t[key] + 1 });
+                }
             });
         }
-        draggedTodo[key] = toPos;
+        updates.push({ id: draggedTodo.id, [key]: toPos });
 
-        persist();
-        render();
+        try {
+            await StorageService.reorderTodos(updates);
+            await reloadState();
+            render();
+        } catch (e) {
+            reportError('Failed to reorder', e);
+        }
     }
 
     function onDragEnd(e) {
@@ -856,17 +758,17 @@ const App = (() => {
     }
 
     // --- Export / Import ---
-    function cleanup() {
+    async function cleanup() {
+        // Server applies the same "before last working day" cutoff used previously.
+        // We do a confirm here using the local count so the UX is unchanged.
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-
-        // Find the cutoff: start of last working day
         const cutoff = new Date(today);
-        const dayOfWeek = today.getDay();
-        if (dayOfWeek === 1) cutoff.setDate(cutoff.getDate() - 3);       // Monday -> Friday
-        else if (dayOfWeek === 0) cutoff.setDate(cutoff.getDate() - 2);   // Sunday -> Friday
-        else if (dayOfWeek === 6) cutoff.setDate(cutoff.getDate() - 1);   // Saturday -> Friday
-        else cutoff.setDate(cutoff.getDate() - 1);                        // Weekday -> yesterday
+        const dow = today.getDay();
+        if (dow === 1) cutoff.setDate(cutoff.getDate() - 3);
+        else if (dow === 0) cutoff.setDate(cutoff.getDate() - 2);
+        else if (dow === 6) cutoff.setDate(cutoff.getDate() - 1);
+        else cutoff.setDate(cutoff.getDate() - 1);
 
         const toRemove = data.todos.filter(t =>
             t.status === 'Done' && t.completedDate && new Date(t.completedDate) < cutoff
@@ -879,27 +781,34 @@ const App = (() => {
 
         if (!confirm(`Remove ${toRemove.length} task(s) completed before ${cutoff.toLocaleDateString()}?`)) return;
 
-        const removeIds = new Set(toRemove.map(t => t.id));
-        data.todos = data.todos.filter(t => !removeIds.has(t.id));
-
-        persist();
-        render();
+        try {
+            const res = await StorageService.cleanup();
+            await reloadState();
+            render();
+            alert(`Removed ${res.deletedIds.length} task(s).`);
+        } catch (e) {
+            reportError('Failed to clean up', e);
+        }
     }
 
-    function exportData() {
-        StorageService.setLastBackup(data, new Date().toISOString());
-        persist();
+    async function exportData() {
+        try {
+            const state = await StorageService.exportAll();
+            await StorageService.setLastBackup();
+            const json = JSON.stringify(state, null, 2);
+            const blob = new Blob([json], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `todo-backup-${new Date().toISOString().slice(0, 10)}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
 
-        const json = StorageService.exportJSON(data);
-        const blob = new Blob([json], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `todo-backup-${new Date().toISOString().slice(0, 10)}.json`;
-        a.click();
-        URL.revokeObjectURL(url);
-
-        document.getElementById('backup-banner').classList.remove('show');
+            document.getElementById('backup-banner').classList.remove('show');
+            await reloadState();
+        } catch (e) {
+            reportError('Failed to export', e);
+        }
     }
 
     function importData(e) {
@@ -907,18 +816,19 @@ const App = (() => {
         if (!file) return;
 
         const reader = new FileReader();
-        reader.onload = function(event) {
+        reader.onload = async function(event) {
             try {
-                const imported = StorageService.importJSON(event.target.result);
+                const imported = JSON.parse(event.target.result);
                 if (!imported.projects || !imported.todos) {
                     throw new Error('Invalid format');
                 }
-                data = imported;
-                persist();
+                if (!confirm(`Import ${imported.projects.length} project(s) and ${imported.todos.length} todo(s)? This REPLACES all current data.`)) return;
+                await StorageService.importAll(imported);
+                await reloadState();
                 render();
                 alert('Data imported successfully!');
-            } catch {
-                alert('Failed to import: invalid file format.');
+            } catch (err) {
+                alert(`Failed to import: ${err.message || 'invalid file format'}`);
             }
         };
         reader.readAsText(file);
@@ -927,7 +837,7 @@ const App = (() => {
 
     // --- Auto-backup check ---
     function checkBackup() {
-        const last = StorageService.getLastBackup(data);
+        const last = data.lastBackup;
         if (!last) {
             // No backup has ever been made — only show banner if there's data
             if (data.todos.length > 0) {
@@ -947,7 +857,7 @@ const App = (() => {
     }
 
     // --- Init ---
-    function init() {
+    async function init() {
         // Tags input: add tag on Enter
         document.getElementById('tags-input').addEventListener('keydown', function(e) {
             if (e.key === 'Enter') {
@@ -975,8 +885,13 @@ const App = (() => {
             }
         });
 
+        // Initial load from API
+        await reloadState();
         checkBackup();
         render();
+
+        // Pick up changes made from the PocketDev chat tool
+        startPolling();
     }
 
     // Start the app

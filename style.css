@@ -33,6 +33,22 @@ body {
     font-weight: 700;
 }
 
+/* API status indicator — small dot next to the title.
+   Green = backend reachable, red = unreachable. */
+.api-status {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: auto;
+    background: #888;
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.15);
+    transition: background 0.2s ease;
+}
+.api-status.online { background: #22c55e; }
+.api-status.offline { background: #ef4444; animation: api-blink 1.5s ease-in-out infinite; }
+@keyframes api-blink { 50% { opacity: 0.4; } }
+
 /* ===== Sidebar ===== */
 .sidebar {
     background: #fff;
