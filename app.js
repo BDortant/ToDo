@@ -134,6 +134,11 @@ const App = (() => {
     function showLoadError(err) {
         const container = document.getElementById('main-content');
         if (!container) return;
+        // Escape err.message before interpolating into innerHTML. Even though
+        // this is a local-only tool, a malformed backend response (or a
+        // compromised dependency) could send HTML/<script> content; rendering
+        // it raw via innerHTML would execute it.
+        const errText = err ? String(err.message || err) : '';
         container.innerHTML = `
             <div class="load-error">
                 <h2>Cannot reach the ToDo backend</h2>
@@ -142,7 +147,7 @@ const App = (() => {
                 <pre>cd /workspace/zeroplex/ToDo
 docker compose up -d</pre>
                 <button class="btn btn-primary" onclick="App.retryInit()">Retry</button>
-                ${err ? `<details><summary>Error details</summary><pre>${(err.message || err) + ''}</pre></details>` : ''}
+                ${errText ? `<details><summary>Error details</summary><pre>${escapeHTML(errText)}</pre></details>` : ''}
             </div>
         `;
     }
