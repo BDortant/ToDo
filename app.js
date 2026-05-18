@@ -160,7 +160,6 @@ docker compose up -d</pre>
     async function retryInit() {
         const ok = await reloadState();
         if (ok) {
-            checkBackup();
             render();
             startPolling();
         }
@@ -286,17 +285,8 @@ docker compose up -d</pre>
             todos = todos.filter(t => t.status !== 'Done');
         }
 
-        // Filter by status
-        const statusFilter = document.getElementById('filter-status').value;
-        if (statusFilter) {
-            todos = todos.filter(t => t.status === statusFilter);
-        }
-
-        // Filter by effort
-        const effortFilter = document.getElementById('filter-effort').value;
-        if (effortFilter) {
-            todos = todos.filter(t => t.effort === effortFilter);
-        }
+        // Status + Effort filters now live in the per-column popovers
+        // (built by buildTable), so no top-bar reads needed here anymore.
 
         // Search
         const search = document.getElementById('filter-search').value.toLowerCase().trim();
@@ -1182,7 +1172,6 @@ docker compose up -d</pre>
             a.click();
             URL.revokeObjectURL(url);
 
-            document.getElementById('backup-banner').classList.remove('show');
             await reloadState();
         } catch (e) {
             reportError('Failed to export', e);
@@ -1213,26 +1202,9 @@ docker compose up -d</pre>
         e.target.value = '';
     }
 
-    // --- Auto-backup check ---
-    function checkBackup() {
-        const last = data.lastBackup;
-        if (!last) {
-            // No backup has ever been made — only show banner if there's data
-            if (data.todos.length > 0) {
-                document.getElementById('backup-banner').classList.add('show');
-            }
-            return;
-        }
-
-        const hoursSince = (Date.now() - new Date(last).getTime()) / (1000 * 60 * 60);
-        if (hoursSince >= 24) {
-            document.getElementById('backup-banner').classList.add('show');
-        }
-    }
-
-    function dismissBackupBanner() {
-        document.getElementById('backup-banner').classList.remove('show');
-    }
+    // Backup-nag removed: data lives in a named Docker volume that survives
+    // restarts and rebuilds, so the 24h "make a backup" prompt was misleading.
+    // Manual Export/Import buttons in the header remain for migration use.
 
     // --- Init ---
     async function init() {
@@ -1283,7 +1255,6 @@ docker compose up -d</pre>
             showLoadError(new Error('Initial /api/state request failed'));
             return; // Don't start polling — user will hit Retry
         }
-        checkBackup();
         render();
 
         // Pick up changes made from the PocketDev chat tool
@@ -1320,7 +1291,6 @@ docker compose up -d</pre>
         cleanup,
         exportData,
         importData,
-        dismissBackupBanner,
         retryInit,
         sortBy,
         setColFilter,

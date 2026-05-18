@@ -643,22 +643,6 @@ body {
     font-size: 13px;
 }
 
-/* ===== Backup banner ===== */
-.backup-banner {
-    display: none;
-    background: #fef3c7;
-    border: 1px solid #f59e0b;
-    border-radius: 8px;
-    padding: 12px 20px;
-    margin-bottom: 16px;
-    align-items: center;
-    justify-content: space-between;
-}
-
-.backup-banner.show { display: flex; }
-
-.backup-banner p { font-size: 14px; color: #92400e; }
-
 /* ===== Empty state ===== */
 .empty-state {
     text-align: center;

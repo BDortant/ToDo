@@ -44,14 +44,6 @@
 
     <!-- Main content -->
     <main class="main">
-        <div class="backup-banner" id="backup-banner">
-            <p>It's been over 24 hours since your last backup.</p>
-            <div style="display:flex;gap:8px">
-                <button class="btn btn-primary btn-small" onclick="App.exportData()">Backup Now</button>
-                <button class="btn btn-secondary btn-small" onclick="App.dismissBackupBanner()">Dismiss</button>
-            </div>
-        </div>
-
         <div class="main-header">
             <h2 id="main-title">All Items</h2>
             <div class="main-header-actions">
@@ -63,26 +55,14 @@
             </div>
         </div>
 
+        <!-- Per-column Status / Effort filters now live in the table header
+             popovers (built by app.js), so the top filter bar carries only
+             the controls that aren't expressible per-column:
+              - global cross-field search
+              - hide-done one-click
+              - daily view (open + done-since-last-working-day) -->
         <div class="filters-bar">
-            <select id="filter-status" onchange="App.render()">
-                <option value="">All Statuses</option>
-                <option value="To Do">To Do</option>
-                <option value="In Progress">In Progress</option>
-                <option value="Waiting on Client">Waiting on Client</option>
-                <option value="Waiting on Me">Waiting on Me</option>
-                <option value="Waiting on Third Party">Waiting on Third Party</option>
-                <option value="On Hold">On Hold</option>
-                <option value="In Review">In Review</option>
-                <option value="Done">Done</option>
-                <option value="Cancelled">Cancelled</option>
-            </select>
-            <select id="filter-effort" onchange="App.render()">
-                <option value="">All Efforts</option>
-                <option value="small">Small</option>
-                <option value="medium">Medium</option>
-                <option value="large">Large</option>
-            </select>
-            <input type="text" id="filter-search" placeholder="Search..." oninput="App.render()">
+            <input type="text" id="filter-search" placeholder="Search…" oninput="App.render()">
             <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;margin-left:8px">
                 <input type="checkbox" id="filter-hide-done" onchange="App.toggleFilter('hide-done')"> Hide done
             </label>
