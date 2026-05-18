@@ -18,7 +18,23 @@ const StorageService = (() => {
         }
         const res = await fetch(BASE + path, opts);
         const text = await res.text();
-        const data = text ? JSON.parse(text) : null;
+        // Defensive parse: if a reverse proxy / error page returns
+        // HTML or plain text, JSON.parse would throw and hide the real
+        // HTTP error. Treat parse failures as "no structured payload"
+        // and let the res.ok branch produce a useful message.
+        let data = null;
+        if (text) {
+            try {
+                data = JSON.parse(text);
+            } catch {
+                if (!res.ok) {
+                    const err = new Error(`HTTP ${res.status}: ${text.slice(0, 120)}`);
+                    err.status = res.status;
+                    throw err;
+                }
+                throw new Error('Invalid JSON response from API');
+            }
+        }
         if (!res.ok) {
             const msg = (data && data.error) ? data.error : `HTTP ${res.status}`;
             const err = new Error(msg);
@@ -89,6 +105,7 @@ const App = (() => {
     let editingTodoTags = [];          // temp tags for the form
     let draggedRowId = null;           // drag-to-reorder
     let pollTimer = null;
+    let pollInFlight = false;          // single-flight guard for polling
     const POLL_MS = 10000;             // cross-client sync interval
 
     // Per-column sort + filter state.
@@ -176,6 +193,11 @@ docker compose up -d</pre>
         pollTimer = setInterval(async () => {
             if (document.hidden) return;    // tab not visible
             if (isUserBusy()) return;       // mid-edit or dragging — don't trample
+            // Single-flight: skip if a previous tick is still in flight.
+            // Without this, slow responses can arrive out of order and an
+            // older snapshot can overwrite newer state in `data`.
+            if (pollInFlight) return;
+            pollInFlight = true;
             try {
                 const fresh = await StorageService.loadAll();
                 data = fresh;
@@ -183,6 +205,8 @@ docker compose up -d</pre>
                 render();
             } catch (e) {
                 ApiStatus.markFail();
+            } finally {
+                pollInFlight = false;
             }
         }, POLL_MS);
     }
