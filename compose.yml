@@ -1,0 +1,26 @@
+services:
+  todo:
+    build:
+      # Build context = repo root so the Dockerfile can COPY the
+      # frontend files (index.html, app.js, style.css) directly
+      # into the image. They're not bind-mounted because some Docker
+      # setups (PocketDev DinD, dev containers) create phantom dirs
+      # when the daemon can't see individual file paths.
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: todo-app
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8084:8084"
+    volumes:
+      # SQLite lives in a named Docker volume — the container's
+      # non-root `node` user owns it. Backups go through
+      # GET /api/export, not direct file access.
+      - todo_data:/app/data
+    environment:
+      PORT: 8084
+      DATA_DIR: /app/data
+      PUBLIC_DIR: /app/public
+
+volumes:
+  todo_data:

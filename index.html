@@ -12,6 +12,9 @@
     <!-- Toolbar -->
     <header class="toolbar">
         <h1>ToDo</h1>
+        <span id="api-status" class="api-status online" role="status" aria-live="polite" title="Backend online">
+            <span class="visually-hidden" id="api-status-label">Backend online</span>
+        </span>
         <input type="file" id="import-file" accept=".json" style="display:none" onchange="App.importData(event)">
     </header>
 
@@ -19,9 +22,17 @@
     <aside class="sidebar">
         <div class="sidebar-section">
             <h2>Views</h2>
-            <ul class="view-toggle" id="view-toggle">
-                <li class="active" data-view="all" onclick="App.setView('all')">All Items</li>
-                <li data-view="by-project" onclick="App.setView('by-project')">By Project</li>
+            <ul class="view-toggle" id="view-toggle" role="tablist" aria-label="View modes">
+                <li role="presentation">
+                    <button type="button" class="view-toggle-btn active" data-view="all"
+                            role="tab" aria-selected="true" aria-current="page"
+                            onclick="App.setView('all')">All items</button>
+                </li>
+                <li role="presentation">
+                    <button type="button" class="view-toggle-btn" data-view="by-project"
+                            role="tab" aria-selected="false"
+                            onclick="App.setView('by-project')">By project</button>
+                </li>
             </ul>
         </div>
         <div class="sidebar-section">
@@ -33,14 +44,6 @@
 
     <!-- Main content -->
     <main class="main">
-        <div class="backup-banner" id="backup-banner">
-            <p>It's been over 24 hours since your last backup.</p>
-            <div style="display:flex;gap:8px">
-                <button class="btn btn-primary btn-small" onclick="App.exportData()">Backup Now</button>
-                <button class="btn btn-secondary btn-small" onclick="App.dismissBackupBanner()">Dismiss</button>
-            </div>
-        </div>
-
         <div class="main-header">
             <h2 id="main-title">All Items</h2>
             <div class="main-header-actions">
@@ -52,26 +55,14 @@
             </div>
         </div>
 
+        <!-- Per-column Status / Effort filters now live in the table header
+             popovers (built by app.js), so the top filter bar carries only
+             the controls that aren't expressible per-column:
+              - global cross-field search
+              - hide-done one-click
+              - daily view (open + done-since-last-working-day) -->
         <div class="filters-bar">
-            <select id="filter-status" onchange="App.render()">
-                <option value="">All Statuses</option>
-                <option value="To Do">To Do</option>
-                <option value="In Progress">In Progress</option>
-                <option value="Waiting on Client">Waiting on Client</option>
-                <option value="Waiting on Me">Waiting on Me</option>
-                <option value="Waiting on Third Party">Waiting on Third Party</option>
-                <option value="On Hold">On Hold</option>
-                <option value="In Review">In Review</option>
-                <option value="Done">Done</option>
-                <option value="Cancelled">Cancelled</option>
-            </select>
-            <select id="filter-effort" onchange="App.render()">
-                <option value="">All Efforts</option>
-                <option value="small">Small</option>
-                <option value="medium">Medium</option>
-                <option value="large">Large</option>
-            </select>
-            <input type="text" id="filter-search" placeholder="Search..." oninput="App.render()">
+            <input type="text" id="filter-search" placeholder="Search…" oninput="App.render()">
             <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;margin-left:8px">
                 <input type="checkbox" id="filter-hide-done" onchange="App.toggleFilter('hide-done')"> Hide done
             </label>
@@ -160,6 +151,14 @@
                 <div class="form-group">
                     <label>Assignee</label>
                     <input type="text" id="todo-assignee">
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="todo-snooze-until">Snooze until (optional)</label>
+                    <input type="date" id="todo-snooze-until" aria-describedby="todo-snooze-until-help">
+                    <small id="todo-snooze-until-help" style="color:#888;font-size:11px">Hides from Today/Now until this date.</small>
                 </div>
             </div>
 

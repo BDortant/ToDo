@@ -1,56 +1,95 @@
 // =============================================================
-// STORAGE SERVICE
-// All data access goes through this module. Currently uses
-// localStorage. Designed so File System Access API can replace
-// the internals without changing the rest of the app.
+// STORAGE SERVICE — HTTP API client
+// All data access goes through this module. The backend is a
+// small Node + SQLite server (see /server) that owns the
+// authoritative state. Per-operation calls let the PocketDev
+// chat tool and the browser UI mutate the same data safely.
 // =============================================================
 const StorageService = (() => {
-    const STORAGE_KEY = 'todo_app_data';
+    // Same-origin: the Node server hosts both /api and the static frontend.
+    // Override via window.TODO_API_BASE if you ever split them.
+    const BASE = (typeof window !== 'undefined' && window.TODO_API_BASE) || '';
 
-    // Default data structure
-    function defaultData() {
-        return {
-            projects: [],
-            todos: [],
-            lastBackup: null
-        };
+    async function call(method, path, body) {
+        const opts = { method, headers: { 'Accept': 'application/json' } };
+        if (body !== undefined) {
+            opts.headers['Content-Type'] = 'application/json';
+            opts.body = JSON.stringify(body);
+        }
+        const res = await fetch(BASE + path, opts);
+        const text = await res.text();
+        // Defensive parse: if a reverse proxy / error page returns
+        // HTML or plain text, JSON.parse would throw and hide the real
+        // HTTP error. Treat parse failures as "no structured payload"
+        // and let the res.ok branch produce a useful message.
+        let data = null;
+        if (text) {
+            try {
+                data = JSON.parse(text);
+            } catch {
+                if (!res.ok) {
+                    const err = new Error(`HTTP ${res.status}: ${text.slice(0, 120)}`);
+                    err.status = res.status;
+                    throw err;
+                }
+                throw new Error('Invalid JSON response from API');
+            }
+        }
+        if (!res.ok) {
+            const msg = (data && data.error) ? data.error : `HTTP ${res.status}`;
+            const err = new Error(msg);
+            err.status = res.status;
+            throw err;
+        }
+        return data;
     }
 
     return {
-        // Load all data from storage
-        load() {
-            const raw = localStorage.getItem(STORAGE_KEY);
-            if (!raw) return defaultData();
-            try {
-                return JSON.parse(raw);
-            } catch {
-                return defaultData();
-            }
-        },
+        // --- Bulk ---
+        loadAll() { return call('GET', '/api/state'); },
+        exportAll() { return call('GET', '/api/export'); },
+        importAll(state) { return call('POST', '/api/import', state); },
 
-        // Save all data to storage
-        save(data) {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-        },
+        // --- Projects ---
+        createProject(p) { return call('POST', '/api/projects', p); },
+        patchProject(id, patch) { return call('PATCH', `/api/projects/${encodeURIComponent(id)}`, patch); },
+        deleteProject(id) { return call('DELETE', `/api/projects/${encodeURIComponent(id)}`); },
 
-        // Export data as a JSON string (for file download)
-        exportJSON(data) {
-            return JSON.stringify(data, null, 2);
-        },
+        // --- Todos ---
+        createTodo(t) { return call('POST', '/api/todos', t); },
+        patchTodo(id, patch) { return call('PATCH', `/api/todos/${encodeURIComponent(id)}`, patch); },
+        deleteTodo(id) { return call('DELETE', `/api/todos/${encodeURIComponent(id)}`); },
+        reorderTodos(updates) { return call('POST', '/api/todos/reorder', updates); },
+        cleanup() { return call('POST', '/api/todos/cleanup'); },
 
-        // Parse imported JSON string back into data
-        importJSON(jsonString) {
-            return JSON.parse(jsonString);
-        },
+        // --- Meta ---
+        setLastBackup() { return call('POST', '/api/meta/last-backup', { iso: new Date().toISOString() }); }
+    };
+})();
 
-        // Get/set last backup timestamp
-        getLastBackup(data) {
-            return data.lastBackup;
-        },
-
-        setLastBackup(data, timestamp) {
-            data.lastBackup = timestamp;
-        }
+// API status indicator — surfaces backend health in the header.
+// Updates both the visual dot and the aria-live label so screen
+// readers announce the change too.
+const ApiStatus = (() => {
+    let ok = true;
+    function set(newOk) {
+        if (ok === newOk) return;
+        ok = newOk;
+        const el = document.getElementById('api-status');
+        if (!el) return;
+        el.classList.toggle('online', ok);
+        el.classList.toggle('offline', !ok);
+        const onlineMsg = 'Backend online';
+        const offlineMsg = 'Backend unreachable — changes will fail until reconnected';
+        const msg = ok ? onlineMsg : offlineMsg;
+        el.title = msg;
+        el.setAttribute('aria-label', msg);
+        const label = document.getElementById('api-status-label');
+        if (label) label.textContent = msg;
+    }
+    return {
+        markOk() { set(true); },
+        markFail() { set(false); }
     };
 })();
 
@@ -59,20 +98,131 @@ const StorageService = (() => {
 // APP — State, logic, and rendering
 // =============================================================
 const App = (() => {
-    let data = StorageService.load();
+    let data = { projects: [], todos: [], lastBackup: null };
 
     let currentView = 'all';           // 'all' or 'by-project'
     let selectedProjectId = null;      // filter in sidebar
     let editingTodoTags = [];          // temp tags for the form
     let draggedRowId = null;           // drag-to-reorder
+    let pollTimer = null;
+    let pollInFlight = false;          // single-flight guard for polling
+    const POLL_MS = 10000;             // cross-client sync interval
+
+    // Per-column sort + filter state.
+    // - Text columns: string substring filter
+    // - Enum columns: array of selected values (multi-select)
+    let sortState = { key: 'overallPriority', dir: 'asc' };
+    const colFilters = {
+        title: '',           // text substring
+        deadline: '',        // text substring
+        assignee: '',        // text substring
+        project: [],         // enum multi-select (project names)
+        status: [],          // enum multi-select
+        effort: [],          // enum multi-select (incl. '' for "no effort")
+        tags: []             // enum multi-select (real tags + 'snoozed' virtual)
+    };
+
+    // Which filter popover is currently open (only one at a time).
+    let openPopoverKey = null;
+
+    // Reserved tags that ALWAYS appear in the tag filter dropdown, even when
+    // no item currently carries them. 'snoozed' is a virtual filter that
+    // matches items with snoozeUntil in the future (driven by the backend
+    // snooze_until column, not a real tag).
+    const RESERVED_FILTER_TAGS = ['delegatable', 'watching', 'snoozed'];
 
     // --- Helpers ---
-    function generateId() {
-        return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
+    async function reloadState() {
+        try {
+            data = await StorageService.loadAll();
+            ApiStatus.markOk();
+            hideLoadError();
+            return true;
+        } catch (e) {
+            ApiStatus.markFail();
+            console.error('Failed to load state:', e);
+            return false;
+        }
     }
 
-    function persist() {
-        StorageService.save(data);
+    // Full-screen error overlay shown only on first-load failure.
+    // Without this, users would see an empty app and assume data is gone.
+    function showLoadError(err) {
+        const container = document.getElementById('main-content');
+        if (!container) return;
+        // Escape err.message before interpolating into innerHTML. Even though
+        // this is a local-only tool, a malformed backend response (or a
+        // compromised dependency) could send HTML/<script> content; rendering
+        // it raw via innerHTML would execute it.
+        const errText = err ? String(err.message || err) : '';
+        container.innerHTML = `
+            <div class="load-error">
+                <h2>Cannot reach the ToDo backend</h2>
+                <p>The app couldn't load your data from the API. Your data is safe — it's just unreachable right now.</p>
+                <p>Make sure the server is running:</p>
+                <pre>cd /workspace/zeroplex/ToDo
+docker compose up -d</pre>
+                <button class="btn btn-primary" onclick="App.retryInit()">Retry</button>
+                ${errText ? `<details><summary>Error details</summary><pre>${escapeHTML(errText)}</pre></details>` : ''}
+            </div>
+        `;
+    }
+
+    function hideLoadError() {
+        const el = document.querySelector('.load-error');
+        if (el) el.remove();
+    }
+
+    async function retryInit() {
+        const ok = await reloadState();
+        if (ok) {
+            render();
+            startPolling();
+        }
+    }
+
+    function reportError(prefix, e) {
+        ApiStatus.markFail();
+        console.error(prefix, e);
+        alert(`${prefix}: ${e.message || e}`);
+    }
+
+    function startPolling() {
+        if (pollTimer) clearInterval(pollTimer);
+        pollTimer = setInterval(async () => {
+            if (document.hidden) return;    // tab not visible
+            if (isUserBusy()) return;       // mid-edit or dragging — don't trample
+            // Single-flight: skip if a previous tick is still in flight.
+            // Without this, slow responses can arrive out of order and an
+            // older snapshot can overwrite newer state in `data`.
+            if (pollInFlight) return;
+            pollInFlight = true;
+            try {
+                const fresh = await StorageService.loadAll();
+                data = fresh;
+                ApiStatus.markOk();
+                render();
+            } catch (e) {
+                ApiStatus.markFail();
+            } finally {
+                pollInFlight = false;
+            }
+        }, POLL_MS);
+    }
+
+    // Returns true when re-rendering the table would destroy something
+    // the user is actively doing. Polling skips these ticks; the next
+    // tick (10s later) will pick up server changes naturally.
+    function isUserBusy() {
+        if (draggedRowId) return true;
+        const ae = document.activeElement;
+        if (!ae) return false;
+        if (ae.tagName === 'TEXTAREA') return true;
+        if (ae.tagName === 'INPUT' && ae.classList.contains('inline-input')) return true;
+        // Also pause while either modal is open
+        if (document.querySelector('.modal-backdrop.open')) return true;
+        return false;
     }
 
     function statusToBadgeClass(status) {
@@ -159,17 +309,8 @@ const App = (() => {
             todos = todos.filter(t => t.status !== 'Done');
         }
 
-        // Filter by status
-        const statusFilter = document.getElementById('filter-status').value;
-        if (statusFilter) {
-            todos = todos.filter(t => t.status === statusFilter);
-        }
-
-        // Filter by effort
-        const effortFilter = document.getElementById('filter-effort').value;
-        if (effortFilter) {
-            todos = todos.filter(t => t.effort === effortFilter);
-        }
+        // Status + Effort filters now live in the per-column popovers
+        // (built by buildTable), so no top-bar reads needed here anymore.
 
         // Search
         const search = document.getElementById('filter-search').value.toLowerCase().trim();
@@ -186,51 +327,184 @@ const App = (() => {
     }
 
     // --- Build a todo table ---
-    function buildTable(todos, showProject, sortBy) {
-        if (sortBy === 'project') {
-            todos = todos.slice().sort((a, b) => (a.projectPriority ?? 999) - (b.projectPriority ?? 999));
-        } else {
-            todos = todos.slice().sort((a, b) => (a.overallPriority ?? 999) - (b.overallPriority ?? 999));
+    //
+    // Pipeline: sort (per sortState) → per-column filter (per colFilters) → render.
+    // Renders three rows in <thead>: column headers (clickable to sort) and a
+    // filter row (text input or enum dropdown per column). Action column is
+    // pinned right and shows context-aware buttons (snooze hidden for off-queue).
+    function buildTable(todos, showProject, defaultSortKey) {
+        // Default sort if the user hasn't picked one yet for this view.
+        // 'project' view groups should default to projectPriority, otherwise overallPriority.
+        if (defaultSortKey === 'project' && sortState.key === 'overallPriority') {
+            // user hasn't overridden — default to projectPriority for this view
+            // (we don't mutate sortState; just compute locally for default ordering)
         }
-        if (todos.length === 0) {
-            return '<div class="empty-state"><p>No to-do items yet. Click "+ New To-Do" to get started.</p></div>';
+        const effectiveKey = (defaultSortKey === 'project' && sortState.key === 'overallPriority')
+            ? 'projectPriority' : sortState.key;
+        const effectiveDir = sortState.dir;
+
+        // Sort: open items first, then off-queue (Done/Cancelled) at bottom.
+        // Within open: by chosen column. Within off-queue: by completedDate desc.
+        const isOff = t => t.status === 'Done' || t.status === 'Cancelled';
+        todos = todos.slice().sort((a, b) => {
+            const aOff = isOff(a), bOff = isOff(b);
+            if (aOff !== bOff) return aOff ? 1 : -1;
+            if (aOff && bOff) return String(b.completedDate || '').localeCompare(String(a.completedDate || ''));
+            return compareByKey(a, b, effectiveKey, effectiveDir);
+        });
+
+        // Per-column filters (applied AFTER global filters in getFilteredTodos).
+        // - Text columns: case-insensitive substring match
+        // - Enum multi-select: include row if its value is in the selected array
+        //   (empty array = no filter applied)
+        const f = colFilters;
+        const today = todayLocalISO();
+        if (f.title)         todos = todos.filter(t => (t.title || '').toLowerCase().includes(f.title.toLowerCase()));
+        if (f.deadline)      todos = todos.filter(t => (t.deadline || '').includes(f.deadline));
+        if (f.assignee)      todos = todos.filter(t => (t.assignee || '').toLowerCase().includes(f.assignee.toLowerCase()));
+        if (f.project.length) todos = todos.filter(t => f.project.includes(getProjectName(t.projectId)));
+        if (f.status.length)  todos = todos.filter(t => f.status.includes(t.status));
+        if (f.effort.length)  todos = todos.filter(t => f.effort.includes(t.effort || ''));
+        if (f.tags.length) {
+            todos = todos.filter(t => {
+                for (const sel of f.tags) {
+                    // 'snoozed' is a virtual filter — matches snoozed items via snoozeUntil
+                    if (sel === 'snoozed') {
+                        if (t.snoozeUntil && t.snoozeUntil > today) return true;
+                    } else if ((t.tags || []).includes(sel)) {
+                        return true;
+                    }
+                }
+                return false;
+            });
         }
 
         const statusOptions = ['To Do', 'In Progress', 'Waiting on Client', 'Waiting on Me', 'Waiting on Third Party', 'On Hold', 'In Review', 'Done', 'Cancelled'];
         const effortOptions = ['', 'small', 'medium', 'large'];
 
+        // Header cell with sort indicator. Clicking toggles asc/desc.
+        const sortIndicator = (key) => {
+            if (sortState.key !== key) return '<span class="sort-indicator">↕</span>';
+            return sortState.dir === 'asc'
+                ? '<span class="sort-indicator active">↑</span>'
+                : '<span class="sort-indicator active">↓</span>';
+        };
+        const th = (key, label, attrs = '') =>
+            `<th class="sortable" ${attrs} onclick="App.sortBy('${key}')">${label} ${sortIndicator(key)}</th>`;
+
+        // Filter cell renderers. `data-filter-key` lets the focus-preservation
+        // helper re-attach focus to the same input after each render.
+
+        // Text filter: case-insensitive substring match.
+        const tfText = (key, placeholder = '') =>
+            `<th><input type="text" class="col-filter" data-filter-key="${key}" value="${escapeAttr(colFilters[key])}" placeholder="${escapeAttr(placeholder)}" oninput="App.setColFilter('${key}', this.value)"></th>`;
+
+        // Multi-select enum filter: button + popover with checkboxes.
+        // Selected count shown on button. Click outside to close.
+        const tfMulti = (key, options, labelFor) => {
+            const selected = colFilters[key] || [];
+            const isOpen = openPopoverKey === key;
+            const btnLabel = selected.length === 0
+                ? 'all'
+                : (selected.length === 1
+                    ? (labelFor ? labelFor(selected[0]) : (selected[0] || '—'))
+                    : `${selected.length} selected`);
+            const btnClass = selected.length > 0 ? 'col-filter-btn active' : 'col-filter-btn';
+            return `<th class="multi-filter-cell">
+                <button type="button" class="${btnClass}" data-filter-key="${key}" onclick="event.stopPropagation(); App.toggleFilterPopover('${key}')">
+                    ${escapeHTML(btnLabel)} <span class="caret">▾</span>
+                </button>
+                <div class="col-filter-popover${isOpen ? ' open' : ''}" data-popover-key="${key}">
+                    <label class="all-row">
+                        <input type="checkbox" ${selected.length === 0 ? 'checked' : ''} onchange="App.clearColFilter('${key}')">
+                        <em>(all)</em>
+                    </label>
+                    <div class="popover-options">
+                        ${options.map(o => {
+                            const label = labelFor ? labelFor(o) : (o || '—');
+                            const isReserved = key === 'tags' && RESERVED_FILTER_TAGS.includes(o);
+                            return `<label class="${isReserved ? 'reserved-tag' : ''}">
+                                <input type="checkbox" value="${escapeAttr(o)}"
+                                       ${selected.includes(o) ? 'checked' : ''}
+                                       onchange="App.toggleColFilterValue('${key}', this.value)">
+                                ${escapeHTML(label)}
+                            </label>`;
+                        }).join('')}
+                    </div>
+                </div>
+            </th>`;
+        };
+
+        // Collect distinct values. Project from project list; tags merged with
+        // reserved filter tags so delegatable/watching/snoozed always show.
+        const distinctTagsSet = new Set([...RESERVED_FILTER_TAGS, ...data.todos.flatMap(t => t.tags || [])]);
+        const distinctTags = [...distinctTagsSet].sort((a, b) => a.localeCompare(b));
+        const projectFilterOptions = data.projects.slice()
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map(p => p.name);
+
         let html = `<table class="todo-table">
-            <thead><tr>
-                <th style="width:30px"></th>
-                <th style="width:30px" title="Overall Priority">O#</th>
-                <th style="width:30px" title="Project Priority">P#</th>
-                <th>Title</th>
-                ${showProject ? '<th>Project</th>' : ''}
-                <th>Status</th>
-                <th>Effort</th>
-                <th>Deadline</th>
-                <th>Assignee</th>
-                <th>Notes</th>
-                <th>Tags</th>
-                <th style="width:80px">Actions</th>
-            </tr></thead><tbody>`;
+            <thead>
+                <tr class="header-row">
+                    <th style="width:30px"></th>
+                    ${th('overallPriority', 'O#', 'style="width:34px" title="Overall Priority"')}
+                    ${th('projectPriority', 'P#', 'style="width:34px" title="Project Priority"')}
+                    ${th('title', 'Title')}
+                    ${showProject ? th('project', 'Project') : ''}
+                    ${th('status', 'Status')}
+                    ${th('effort', 'Effort')}
+                    ${th('deadline', 'Deadline')}
+                    ${th('assignee', 'Assignee')}
+                    <th>Notes</th>
+                    <th>Tags</th>
+                    <th style="width:120px">Actions</th>
+                </tr>
+                <tr class="filter-row">
+                    <th></th>
+                    <th></th>
+                    <th></th>
+                    ${tfText('title', 'filter…')}
+                    ${showProject ? tfMulti('project', projectFilterOptions) : ''}
+                    ${tfMulti('status', statusOptions)}
+                    ${tfMulti('effort', effortOptions, o => o ? (o[0].toUpperCase() + o.slice(1)) : '—')}
+                    ${tfText('deadline', 'YYYY-MM')}
+                    ${tfText('assignee', 'filter…')}
+                    <th></th>
+                    ${tfMulti('tags', distinctTags)}
+                    <th></th>
+                </tr>
+            </thead><tbody>`;
+
+        // Empty-state: render as a single tbody row so the headers + filter
+        // row stay visible. Previously we returned a separate <div>, which
+        // wiped the filter inputs and locked the user out of typing more.
+        if (todos.length === 0) {
+            const colCount = 11 + (showProject ? 1 : 0);
+            html += `<tr class="empty-row"><td colspan="${colCount}">
+                <em>No matching to-do items. Adjust the filters above or click "+ New To-Do".</em>
+            </td></tr></tbody></table>`;
+            return html;
+        }
 
         for (const todo of todos) {
             const safeId = escapeAttr(todo.id);
-            const rowClass = todo.status === 'Done' ? 'done' : (todo.status === 'Cancelled' ? 'cancelled' : '');
-            // Status inline select
+            const off = isOff(todo);
+            const snoozed = todo.snoozeUntil && todo.snoozeUntil > todayLocalISO();
+            const rowClass = [
+                off ? (todo.status === 'Done' ? 'done' : 'cancelled') : '',
+                snoozed ? 'snoozed' : ''
+            ].filter(Boolean).join(' ');
+
             const statusSelect = `<select class="inline-select" onchange="App.inlineUpdate(this.closest('tr').dataset.id, 'status', this.value)">
                 ${statusOptions.map(s => `<option value="${s}" ${todo.status === s ? 'selected' : ''}>${s}</option>`).join('')}
             </select>`;
 
-            // Effort inline select
             const effortSelect = `<select class="inline-select" onchange="App.inlineUpdate(this.closest('tr').dataset.id, 'effort', this.value)">
                 ${effortOptions.map(e => `<option value="${e}" ${todo.effort === e ? 'selected' : ''}>${e ? e.charAt(0).toUpperCase() + e.slice(1) : '—'}</option>`).join('')}
             </select>`;
 
-            // Deadline inline input — highlight red if overdue and not done
             let isOverdue = false;
-            if (todo.deadline && todo.status !== 'Done' && todo.status !== 'Cancelled') {
+            if (todo.deadline && !off) {
                 const deadlineDate = new Date(todo.deadline + 'T00:00:00');
                 const today = new Date();
                 today.setHours(0, 0, 0, 0);
@@ -238,8 +512,26 @@ const App = (() => {
             }
             const deadlineInput = `<input type="date" class="inline-input ${isOverdue ? 'overdue' : ''}" value="${escapeAttr(todo.deadline || '')}" onchange="App.inlineUpdate(this.closest('tr').dataset.id, 'deadline', this.value)" style="width:130px">`;
 
-            // Assignee inline input
             const assigneeInput = `<input type="text" class="inline-input" value="${escapeAttr(todo.assignee)}" placeholder="—" onblur="App.inlineUpdate(this.closest('tr').dataset.id, 'assignee', this.value)" onkeydown="if(event.key==='Enter'){this.blur()}" style="width:100px">`;
+
+            // Action column — context-aware:
+            // - Snooze only for open, awake items
+            // - Wake only for snoozed items
+            // - Edit/Delete always
+            const actions = [];
+            if (!off) {
+                if (snoozed) {
+                    actions.push(`<button class="btn-icon" onclick="App.unsnoozeTodo('${safeId}')" title="Wake (currently snoozed until ${escapeAttr(todo.snoozeUntil)})">⏰</button>`);
+                } else {
+                    actions.push(`<button class="btn-icon" onclick="App.snoozeTodo('${safeId}')" title="Snooze">💤</button>`);
+                }
+            }
+            actions.push(`<button class="btn-icon" onclick="App.openTodoModal('${safeId}')" title="Edit">✏️</button>`);
+            actions.push(`<button class="btn-icon" onclick="App.deleteTodo('${safeId}')" title="Delete">🗑️</button>`);
+
+            const snoozeBadge = snoozed
+                ? `<span class="snooze-badge" title="Snoozed until ${escapeAttr(todo.snoozeUntil)}">💤 ${escapeHTML(todo.snoozeUntil)}</span>`
+                : '';
 
             html += `<tr class="${rowClass}" draggable="true"
                 data-id="${safeId}"
@@ -251,7 +543,7 @@ const App = (() => {
                 <td><input type="checkbox" ${todo.status === 'Done' ? 'checked' : ''} onchange="App.toggleDone(this.closest('tr').dataset.id)" title="Mark as done"></td>
                 <td style="color:#aaa">${todo.overallPriority || '—'}</td>
                 <td style="color:#aaa">${todo.projectPriority || '—'}</td>
-                <td><strong>${escapeHTML(todo.title)}</strong></td>
+                <td><strong>${escapeHTML(todo.title)}</strong> ${snoozeBadge}</td>
                 ${showProject ? `<td>${escapeHTML(getProjectName(todo.projectId))}</td>` : ''}
                 <td>${statusSelect}</td>
                 <td>${effortSelect}</td>
@@ -259,15 +551,138 @@ const App = (() => {
                 <td>${assigneeInput}</td>
                 <td class="notes-cell clickable-cell" tabindex="0" onclick="App.editNotes(this, this.closest('tr').dataset.id)" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();App.editNotes(this,this.closest('tr').dataset.id)}">${todo.notes ? escapeHTML(todo.notes) : '—'}</td>
                 <td>${(todo.tags || []).map(t => `<span class="tag">${escapeHTML(t)}</span>`).join(' ')}</td>
-                <td>
-                    <button class="btn-icon" onclick="App.openTodoModal(this.closest('tr').dataset.id)" title="Edit">✏️</button>
-                    <button class="btn-icon" onclick="App.deleteTodo(this.closest('tr').dataset.id)" title="Delete">🗑️</button>
-                </td>
+                <td class="actions-cell">${actions.join('')}</td>
             </tr>`;
         }
 
         html += '</tbody></table>';
         return html;
+    }
+
+    function todayLocalISO() {
+        const d = new Date();
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+
+    // Generic comparator for the header-sort feature.
+    // Numbers compare numerically; everything else as case-insensitive strings.
+    function compareByKey(a, b, key, dir) {
+        let av, bv;
+        if (key === 'project') {
+            av = getProjectName(a.projectId);
+            bv = getProjectName(b.projectId);
+        } else {
+            av = a[key];
+            bv = b[key];
+        }
+        if (typeof av === 'number' && typeof bv === 'number') {
+            return dir === 'asc' ? (av || 999) - (bv || 999) : (bv || 999) - (av || 999);
+        }
+        const cmp = String(av || '').toLowerCase().localeCompare(String(bv || '').toLowerCase());
+        return dir === 'asc' ? cmp : -cmp;
+    }
+
+    function sortBy(key) {
+        if (sortState.key === key) {
+            sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
+        } else {
+            sortState.key = key;
+            sortState.dir = 'asc';
+        }
+        render();
+    }
+
+    function setColFilter(key, value) {
+        // Text filters use a string; enum filters use an array (use toggle).
+        colFilters[key] = value;
+        // render() rebuilds the entire table including the filter inputs.
+        // Without focus-preservation the input gets destroyed-and-recreated
+        // on every keystroke, kicking the user out after typing one char.
+        withPreservedFilterFocus(() => render());
+    }
+
+    // Toggle a value in an enum multi-select filter (status/effort/project/tags).
+    function toggleColFilterValue(key, value) {
+        const arr = colFilters[key];
+        if (!Array.isArray(arr)) return;
+        const idx = arr.indexOf(value);
+        if (idx === -1) arr.push(value);
+        else arr.splice(idx, 1);
+        render();
+    }
+
+    // Clear all selections in an enum multi-select filter (= "all" / no filter).
+    function clearColFilter(key) {
+        if (Array.isArray(colFilters[key])) {
+            colFilters[key].length = 0;
+        } else {
+            colFilters[key] = '';
+        }
+        render();
+    }
+
+    // Toggle the popover panel for a multi-select filter. Only one open at a
+    // time. Closes when the user clicks outside (see init's document handler).
+    function toggleFilterPopover(key) {
+        openPopoverKey = openPopoverKey === key ? null : key;
+        render();
+    }
+
+    // Save the currently-focused filter input, run a render, then restore
+    // focus + cursor position on the freshly-rendered input. Identified by
+    // the `data-filter-key` attribute we set on each filter input.
+    function withPreservedFilterFocus(renderFn) {
+        const ae = document.activeElement;
+        const isFilterInput = !!(ae && ae.dataset && ae.dataset.filterKey);
+        let savedKey = null, savedStart = null, savedEnd = null;
+        if (isFilterInput) {
+            savedKey = ae.dataset.filterKey;
+            try { savedStart = ae.selectionStart; savedEnd = ae.selectionEnd; } catch {}
+        }
+        renderFn();
+        if (savedKey) {
+            const next = document.querySelector(`[data-filter-key="${savedKey}"]`);
+            if (next) {
+                next.focus();
+                try {
+                    if (next.type === 'text' && savedStart !== null) {
+                        next.setSelectionRange(savedStart, savedEnd);
+                    }
+                } catch {}
+            }
+        }
+    }
+
+    async function snoozeTodo(id) {
+        const until = prompt('Snooze until (YYYY-MM-DD)? Leave empty for tomorrow:', '') || '';
+        try {
+            const res = await fetch(`/api/todos/${encodeURIComponent(id)}/snooze`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ until })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+            await reloadState();
+            render();
+        } catch (e) {
+            reportError('Failed to snooze', e);
+        }
+    }
+
+    async function unsnoozeTodo(id) {
+        try {
+            const res = await fetch(`/api/todos/${encodeURIComponent(id)}/unsnooze`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+            await reloadState();
+            render();
+        } catch (e) {
+            reportError('Failed to unsnooze', e);
+        }
     }
 
     // --- Render ---
@@ -287,10 +702,17 @@ const App = (() => {
             </li>`;
         }).join('');
 
-        // View toggle — "All Items" is only active when no project is selected
-        document.querySelectorAll('#view-toggle li').forEach(li => {
-            const isActive = li.dataset.view === currentView && !(li.dataset.view === 'all' && selectedProjectId);
-            li.classList.toggle('active', isActive);
+        // View toggle — "All items" is active when no project selected.
+        // Buttons (not <li>) carry the click handler so keyboard works.
+        document.querySelectorAll('#view-toggle .view-toggle-btn').forEach(btn => {
+            const isActive = btn.dataset.view === currentView && !(btn.dataset.view === 'all' && selectedProjectId);
+            btn.classList.toggle('active', isActive);
+            btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+            if (isActive) {
+                btn.setAttribute('aria-current', 'page');
+            } else {
+                btn.removeAttribute('aria-current');
+            }
         });
 
         // Main title
@@ -305,7 +727,7 @@ const App = (() => {
                 const todos = getFilteredTodos(selectedProjectId);
                 container.innerHTML = buildTable(todos, false, 'project');
             } else {
-                titleEl.textContent = 'All Items';
+                titleEl.textContent = 'All items';
                 const todos = getFilteredTodos(null);
                 container.innerHTML = buildTable(todos, true, 'overall');
             }
@@ -378,37 +800,39 @@ const App = (() => {
         document.getElementById('project-modal').classList.remove('open');
     }
 
-    function saveProject(e) {
+    async function saveProject(e) {
         e.preventDefault();
         const id = document.getElementById('project-id').value;
         const name = document.getElementById('project-name').value.trim();
         if (!name) return;
 
-        if (id) {
-            const project = data.projects.find(p => p.id === id);
-            project.name = name;
-        } else {
-            data.projects.push({ id: generateId(), name });
+        try {
+            if (id) {
+                await StorageService.patchProject(id, { name });
+            } else {
+                await StorageService.createProject({ name });
+            }
+            await reloadState();
+            closeProjectModal();
+            render();
+        } catch (e) {
+            reportError('Failed to save project', e);
         }
-
-        persist();
-        closeProjectModal();
-        render();
     }
 
-    function deleteProject(id) {
+    async function deleteProject(id) {
         const project = data.projects.find(p => p.id === id);
+        if (!project) return;
         if (!confirm(`Delete project "${project.name}"? Items in this project will become unassigned.`)) return;
 
-        data.projects = data.projects.filter(p => p.id !== id);
-        // Unassign todos from this project
-        data.todos.forEach(t => {
-            if (t.projectId === id) t.projectId = '';
-        });
-
-        if (selectedProjectId === id) selectedProjectId = null;
-        persist();
-        render();
+        try {
+            await StorageService.deleteProject(id);
+            if (selectedProjectId === id) selectedProjectId = null;
+            await reloadState();
+            render();
+        } catch (e) {
+            reportError('Failed to delete project', e);
+        }
     }
 
     // --- Todo CRUD ---
@@ -432,6 +856,7 @@ const App = (() => {
             document.getElementById('todo-deadline').value = todo.deadline || '';
             document.getElementById('todo-assignee').value = todo.assignee || '';
             document.getElementById('todo-notes').value = todo.notes || '';
+            document.getElementById('todo-snooze-until').value = todo.snoozeUntil || '';
             editingTodoTags = [...(todo.tags || [])];
             setRecurringFormValues(todo);
         } else {
@@ -444,6 +869,7 @@ const App = (() => {
             document.getElementById('todo-deadline').value = '';
             document.getElementById('todo-assignee').value = '';
             document.getElementById('todo-notes').value = '';
+            document.getElementById('todo-snooze-until').value = '';
             editingTodoTags = [];
             setRecurringFormValues({ isRecurring: false, recurringWeeks: 1, recurringDays: [] });
         }
@@ -457,79 +883,56 @@ const App = (() => {
         document.getElementById('todo-modal').classList.remove('open');
     }
 
-    function saveTodo(e) {
+    async function saveTodo(e) {
         e.preventDefault();
         const id = document.getElementById('todo-id').value;
         const title = document.getElementById('todo-title').value.trim();
         if (!title) return;
 
         const newStatus = document.getElementById('todo-status').value;
+        const recurring = getRecurringFormValues();
 
-        if (id) {
-            const todo = data.todos.find(t => t.id === id);
-            const oldStatus = todo.status;
-            todo.title = title;
-            todo.status = newStatus;
-            // If project changed, put it at the end of the new project's list
-            const newProjectId = document.getElementById('todo-project').value;
-            if (todo.projectId !== newProjectId) {
-                todo.projectPriority = data.todos.filter(t => t.projectId === newProjectId).length + 1;
+        const payload = {
+            title,
+            projectId: document.getElementById('todo-project').value,
+            status: newStatus,
+            effort: document.getElementById('todo-effort').value,
+            deadline: document.getElementById('todo-deadline').value,
+            assignee: document.getElementById('todo-assignee').value.trim(),
+            notes: document.getElementById('todo-notes').value,
+            tags: [...editingTodoTags],
+            snoozeUntil: document.getElementById('todo-snooze-until').value || null,
+            isRecurring: recurring.isRecurring,
+            recurringWeeks: recurring.recurringWeeks,
+            recurringDays: recurring.recurringDays
+        };
+
+        try {
+            if (id) {
+                await StorageService.patchTodo(id, payload);
+            } else {
+                await StorageService.createTodo(payload);
             }
-            todo.projectId = newProjectId;
-            todo.effort = document.getElementById('todo-effort').value;
-            todo.deadline = document.getElementById('todo-deadline').value;
-            todo.assignee = document.getElementById('todo-assignee').value.trim();
-            todo.notes = document.getElementById('todo-notes').value;
-            todo.tags = [...editingTodoTags];
-
-            const recurring = getRecurringFormValues();
-            todo.isRecurring = recurring.isRecurring;
-            todo.recurringWeeks = recurring.recurringWeeks;
-            todo.recurringDays = recurring.recurringDays;
-
-            // Auto-set completedDate when status changes to Done
-            if (newStatus === 'Done' && oldStatus !== 'Done') {
-                todo.completedDate = new Date().toISOString();
-                if (todo.isRecurring) spawnNextRecurrence(todo);
-            } else if (newStatus !== 'Done') {
-                todo.completedDate = null;
-            }
-        } else {
-            data.todos.push({
-                id: generateId(),
-                title,
-                projectId: document.getElementById('todo-project').value,
-                status: newStatus,
-                overallPriority: data.todos.length + 1,
-                projectPriority: data.todos.filter(t => t.projectId === document.getElementById('todo-project').value).length + 1,
-                effort: document.getElementById('todo-effort').value,
-                deadline: document.getElementById('todo-deadline').value,
-                assignee: document.getElementById('todo-assignee').value.trim(),
-                notes: document.getElementById('todo-notes').value,
-                tags: [...editingTodoTags],
-                createdDate: new Date().toISOString(),
-                completedDate: newStatus === 'Done' ? new Date().toISOString() : null,
-                ...getRecurringFormValues()
-            });
-
-            const newTodo = data.todos[data.todos.length - 1];
-            if (newStatus === 'Done' && newTodo.isRecurring) {
-                spawnNextRecurrence(newTodo);
-            }
+            await reloadState();
+            closeTodoModal();
+            render();
+        } catch (e) {
+            reportError('Failed to save todo', e);
         }
-
-        persist();
-        closeTodoModal();
-        render();
     }
 
-    function deleteTodo(id) {
+    async function deleteTodo(id) {
         const todo = data.todos.find(t => t.id === id);
+        if (!todo) return;
         if (!confirm(`Delete "${todo.title}"?`)) return;
 
-        data.todos = data.todos.filter(t => t.id !== id);
-        persist();
-        render();
+        try {
+            await StorageService.deleteTodo(id);
+            await reloadState();
+            render();
+        } catch (e) {
+            reportError('Failed to delete todo', e);
+        }
     }
 
     function toggleRecurring() {
@@ -559,78 +962,10 @@ const App = (() => {
         document.getElementById('recurring-section').classList.toggle('open', isRecurring);
     }
 
-    function toLocalDateString(date) {
-        const y = date.getFullYear();
-        const m = String(date.getMonth() + 1).padStart(2, '0');
-        const d = String(date.getDate()).padStart(2, '0');
-        return `${y}-${m}-${d}`;
-    }
-
-    function getNextMatchingDay(recurringDays) {
-        const jsDayMap = [1, 2, 3, 4, 5, 6, 0]; // our 0=Mon..6=Sun -> JS getDay()
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        for (let i = 0; i < 7; i++) {
-            const candidate = new Date(today);
-            candidate.setDate(candidate.getDate() + i);
-            if (recurringDays.some(d => jsDayMap[d] === candidate.getDay())) {
-                return toLocalDateString(candidate);
-            }
-        }
-        return '';
-    }
-
-    function spawnNextRecurrence(todo) {
-        if (!todo.isRecurring || !todo.recurringDays || todo.recurringDays.length === 0) return;
-
-        // Normalize: ensure recurring todo has a deadline before advancing
-        if (!todo.deadline) {
-            todo.deadline = getNextMatchingDay(todo.recurringDays);
-        }
-
-        let newDeadline = '';
-
-        if (todo.deadline) {
-            const base = new Date(todo.deadline + 'T00:00:00');
-            // Convert JS getDay() (0=Sun..6=Sat) into app's day index (0=Mon..6=Sun)
-            const baseAppDow = (base.getDay() + 6) % 7;
-            // Guard against malformed stored values (0, undefined) that would land in the past
-            const weeks = Number.isInteger(todo.recurringWeeks) && todo.recurringWeeks > 0 ? todo.recurringWeeks : 1;
-            const sortedDays = [...todo.recurringDays].sort((a, b) => a - b);
-            const nextInWeek = sortedDays.find(d => d > baseAppDow);
-
-            const candidate = new Date(base);
-            if (nextInWeek !== undefined) {
-                candidate.setDate(candidate.getDate() + (nextInWeek - baseAppDow));
-            } else {
-                // No more selected days this week — jump to the first selected day N weeks ahead
-                const offset = -baseAppDow + weeks * 7 + sortedDays[0];
-                candidate.setDate(candidate.getDate() + offset);
-            }
-            newDeadline = toLocalDateString(candidate);
-        } else {
-            newDeadline = getNextMatchingDay(todo.recurringDays);
-        }
-
-        data.todos.push({
-            id: generateId(),
-            title: todo.title,
-            projectId: todo.projectId,
-            status: 'To Do',
-            overallPriority: data.todos.length + 1,
-            projectPriority: data.todos.filter(t => t.projectId === todo.projectId).length + 1,
-            effort: todo.effort,
-            deadline: newDeadline,
-            assignee: todo.assignee,
-            notes: todo.notes,
-            tags: [...(todo.tags || [])],
-            createdDate: new Date().toISOString(),
-            completedDate: null,
-            isRecurring: true,
-            recurringWeeks: todo.recurringWeeks,
-            recurringDays: [...todo.recurringDays]
-        });
-    }
+    // Recurring-task spawn lives on the server (see server/db.js spawnNextRecurrence).
+    // The server runs it inside the same transaction as the status change, so any client
+    // that flips a recurring todo to Done — browser UI or PocketDev chat — gets the new
+    // occurrence on the very next state reload.
 
     function toggleFilter(which) {
         const hideDone = document.getElementById('filter-hide-done');
@@ -646,29 +981,17 @@ const App = (() => {
         render();
     }
 
-    function inlineUpdate(id, field, value) {
+    async function inlineUpdate(id, field, value) {
         const todo = data.todos.find(t => t.id === id);
         if (!todo) return;
 
-        if (field === 'status') {
-            const oldStatus = todo.status;
-            todo.status = value;
-            if (value === 'Done' && oldStatus !== 'Done') {
-                todo.previousStatus = oldStatus;
-                todo.completedDate = new Date().toISOString();
-                if (todo.isRecurring) spawnNextRecurrence(todo);
-                movePriorityForDone(todo, true);
-            } else if (value !== 'Done' && oldStatus === 'Done') {
-                todo.completedDate = null;
-                delete todo.previousStatus;
-                movePriorityForDone(todo, false);
-            }
-        } else {
-            todo[field] = value;
+        try {
+            await StorageService.patchTodo(id, { [field]: value });
+            await reloadState();
+            render();
+        } catch (e) {
+            reportError('Failed to update todo', e);
         }
-
-        persist();
-        render();
     }
 
     function editNotes(cell, id) {
@@ -694,67 +1017,21 @@ const App = (() => {
         });
     }
 
-    // Move a done item to the top of priority lists, or restore when un-done
-    function movePriorityForDone(todo, markingDone) {
-        if (markingDone) {
-            // Save current priorities so we can restore later
-            todo.previousOverallPriority = todo.overallPriority;
-            todo.previousProjectPriority = todo.projectPriority;
+    // Priority shift on Done lives on the server (see server/db.js shiftPriorityForDone).
+    // The server records previous priorities so an un-done restores correctly, even when
+    // the toggle happens from a different client than the original Done.
 
-            // Move to top: set to 0, shift others above the old position down to fill gap
-            const oldOverall = todo.overallPriority;
-            data.todos.forEach(t => {
-                if (t !== todo && t.overallPriority > oldOverall) t.overallPriority--;
-            });
-            todo.overallPriority = 0;
-
-            if (todo.projectId) {
-                const oldProject = todo.projectPriority;
-                data.todos.forEach(t => {
-                    if (t !== todo && t.projectId === todo.projectId && t.projectPriority > oldProject) t.projectPriority--;
-                });
-                todo.projectPriority = 0;
-            }
-        } else {
-            // Restore previous priorities, shifting others to make room
-            const targetOverall = todo.previousOverallPriority || 1;
-            data.todos.forEach(t => {
-                if (t !== todo && t.overallPriority >= targetOverall) t.overallPriority++;
-            });
-            todo.overallPriority = targetOverall;
-
-            if (todo.projectId) {
-                const targetProject = todo.previousProjectPriority || 1;
-                data.todos.forEach(t => {
-                    if (t !== todo && t.projectId === todo.projectId && t.projectPriority >= targetProject) t.projectPriority++;
-                });
-                todo.projectPriority = targetProject;
-            }
-
-            delete todo.previousOverallPriority;
-            delete todo.previousProjectPriority;
-        }
-    }
-
-    function toggleDone(id) {
+    async function toggleDone(id) {
         const todo = data.todos.find(t => t.id === id);
         if (!todo) return;
-
-        if (todo.status === 'Done') {
-            todo.status = todo.previousStatus || 'To Do';
-            todo.completedDate = null;
-            delete todo.previousStatus;
-            movePriorityForDone(todo, false);
-        } else {
-            todo.previousStatus = todo.status;
-            todo.status = 'Done';
-            todo.completedDate = new Date().toISOString();
-            if (todo.isRecurring) spawnNextRecurrence(todo);
-            movePriorityForDone(todo, true);
+        const newStatus = todo.status === 'Done' ? (todo.previousStatus || 'To Do') : 'Done';
+        try {
+            await StorageService.patchTodo(id, { status: newStatus });
+            await reloadState();
+            render();
+        } catch (e) {
+            reportError('Failed to toggle done', e);
         }
-
-        persist();
-        render();
     }
 
     // --- Tags ---
@@ -810,7 +1087,7 @@ const App = (() => {
         e.currentTarget.classList.remove('drag-over-top', 'drag-over-bottom');
     }
 
-    function onDrop(e) {
+    async function onDrop(e) {
         e.preventDefault();
         e.currentTarget.classList.remove('drag-over-top', 'drag-over-bottom');
         const targetId = e.currentTarget.dataset.id;
@@ -820,33 +1097,50 @@ const App = (() => {
         const targetTodo = data.todos.find(t => t.id === targetId);
         if (!draggedTodo || !targetTodo) return;
 
-        // Insert the dragged item at the target position, shifting others accordingly
         const useProjectPriority = currentView === 'by-project' || selectedProjectId;
         const key = useProjectPriority ? 'projectPriority' : 'overallPriority';
+
+        // In project-priority mode, refuse cross-project drops — the projectPriority
+        // spaces are per-project, so renumbering against a row in a different
+        // project would corrupt both projects' priority sequences.
+        if (useProjectPriority && draggedTodo.projectId !== targetTodo.projectId) {
+            draggedRowId = null;
+            return;
+        }
 
         const fromPos = draggedTodo[key];
         const toPos = targetTodo[key];
 
-        // Get all todos that participate in this priority space
         const affected = useProjectPriority
             ? data.todos.filter(t => t.projectId === draggedTodo.projectId)
             : data.todos;
 
+        // Compute the new priorities locally, then send a single bulk reorder request.
+        const updates = [];
         if (fromPos < toPos) {
-            // Dragging down: shift items between fromPos+1 and toPos up by 1
             affected.forEach(t => {
-                if (t[key] > fromPos && t[key] <= toPos) t[key]--;
+                if (t === draggedTodo) return;
+                if (t[key] > fromPos && t[key] <= toPos) {
+                    updates.push({ id: t.id, [key]: t[key] - 1 });
+                }
             });
         } else {
-            // Dragging up: shift items between toPos and fromPos-1 down by 1
             affected.forEach(t => {
-                if (t[key] >= toPos && t[key] < fromPos) t[key]++;
+                if (t === draggedTodo) return;
+                if (t[key] >= toPos && t[key] < fromPos) {
+                    updates.push({ id: t.id, [key]: t[key] + 1 });
+                }
             });
         }
-        draggedTodo[key] = toPos;
+        updates.push({ id: draggedTodo.id, [key]: toPos });
 
-        persist();
-        render();
+        try {
+            await StorageService.reorderTodos(updates);
+            await reloadState();
+            render();
+        } catch (e) {
+            reportError('Failed to reorder', e);
+        }
     }
 
     function onDragEnd(e) {
@@ -856,17 +1150,17 @@ const App = (() => {
     }
 
     // --- Export / Import ---
-    function cleanup() {
+    async function cleanup() {
+        // Server applies the same "before last working day" cutoff used previously.
+        // We do a confirm here using the local count so the UX is unchanged.
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-
-        // Find the cutoff: start of last working day
         const cutoff = new Date(today);
-        const dayOfWeek = today.getDay();
-        if (dayOfWeek === 1) cutoff.setDate(cutoff.getDate() - 3);       // Monday -> Friday
-        else if (dayOfWeek === 0) cutoff.setDate(cutoff.getDate() - 2);   // Sunday -> Friday
-        else if (dayOfWeek === 6) cutoff.setDate(cutoff.getDate() - 1);   // Saturday -> Friday
-        else cutoff.setDate(cutoff.getDate() - 1);                        // Weekday -> yesterday
+        const dow = today.getDay();
+        if (dow === 1) cutoff.setDate(cutoff.getDate() - 3);
+        else if (dow === 0) cutoff.setDate(cutoff.getDate() - 2);
+        else if (dow === 6) cutoff.setDate(cutoff.getDate() - 1);
+        else cutoff.setDate(cutoff.getDate() - 1);
 
         const toRemove = data.todos.filter(t =>
             t.status === 'Done' && t.completedDate && new Date(t.completedDate) < cutoff
@@ -879,27 +1173,33 @@ const App = (() => {
 
         if (!confirm(`Remove ${toRemove.length} task(s) completed before ${cutoff.toLocaleDateString()}?`)) return;
 
-        const removeIds = new Set(toRemove.map(t => t.id));
-        data.todos = data.todos.filter(t => !removeIds.has(t.id));
-
-        persist();
-        render();
+        try {
+            const res = await StorageService.cleanup();
+            await reloadState();
+            render();
+            alert(`Removed ${res.deletedIds.length} task(s).`);
+        } catch (e) {
+            reportError('Failed to clean up', e);
+        }
     }
 
-    function exportData() {
-        StorageService.setLastBackup(data, new Date().toISOString());
-        persist();
+    async function exportData() {
+        try {
+            const state = await StorageService.exportAll();
+            await StorageService.setLastBackup();
+            const json = JSON.stringify(state, null, 2);
+            const blob = new Blob([json], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `todo-backup-${new Date().toISOString().slice(0, 10)}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
 
-        const json = StorageService.exportJSON(data);
-        const blob = new Blob([json], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `todo-backup-${new Date().toISOString().slice(0, 10)}.json`;
-        a.click();
-        URL.revokeObjectURL(url);
-
-        document.getElementById('backup-banner').classList.remove('show');
+            await reloadState();
+        } catch (e) {
+            reportError('Failed to export', e);
+        }
     }
 
     function importData(e) {
@@ -907,47 +1207,31 @@ const App = (() => {
         if (!file) return;
 
         const reader = new FileReader();
-        reader.onload = function(event) {
+        reader.onload = async function(event) {
             try {
-                const imported = StorageService.importJSON(event.target.result);
+                const imported = JSON.parse(event.target.result);
                 if (!imported.projects || !imported.todos) {
                     throw new Error('Invalid format');
                 }
-                data = imported;
-                persist();
+                if (!confirm(`Import ${imported.projects.length} project(s) and ${imported.todos.length} todo(s)? This REPLACES all current data.`)) return;
+                await StorageService.importAll(imported);
+                await reloadState();
                 render();
                 alert('Data imported successfully!');
-            } catch {
-                alert('Failed to import: invalid file format.');
+            } catch (err) {
+                alert(`Failed to import: ${err.message || 'invalid file format'}`);
             }
         };
         reader.readAsText(file);
         e.target.value = '';
     }
 
-    // --- Auto-backup check ---
-    function checkBackup() {
-        const last = StorageService.getLastBackup(data);
-        if (!last) {
-            // No backup has ever been made — only show banner if there's data
-            if (data.todos.length > 0) {
-                document.getElementById('backup-banner').classList.add('show');
-            }
-            return;
-        }
-
-        const hoursSince = (Date.now() - new Date(last).getTime()) / (1000 * 60 * 60);
-        if (hoursSince >= 24) {
-            document.getElementById('backup-banner').classList.add('show');
-        }
-    }
-
-    function dismissBackupBanner() {
-        document.getElementById('backup-banner').classList.remove('show');
-    }
+    // Backup-nag removed: data lives in a named Docker volume that survives
+    // restarts and rebuilds, so the 24h "make a backup" prompt was misleading.
+    // Manual Export/Import buttons in the header remain for migration use.
 
     // --- Init ---
-    function init() {
+    async function init() {
         // Tags input: add tag on Enter
         document.getElementById('tags-input').addEventListener('keydown', function(e) {
             if (e.key === 'Enter') {
@@ -972,11 +1256,33 @@ const App = (() => {
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
                 document.querySelectorAll('.modal-backdrop.open').forEach(m => m.classList.remove('open'));
+                if (openPopoverKey) {
+                    openPopoverKey = null;
+                    render();
+                }
             }
         });
 
-        checkBackup();
+        // Click-outside to close any open multi-select filter popover.
+        document.addEventListener('click', function(e) {
+            if (!openPopoverKey) return;
+            if (e.target.closest('.col-filter-popover')) return;
+            if (e.target.closest('.col-filter-btn')) return;
+            openPopoverKey = null;
+            render();
+        });
+
+        // Initial load from API. On failure, show a clear error overlay
+        // instead of rendering an empty app (avoids "where did my data go?").
+        const ok = await reloadState();
+        if (!ok) {
+            showLoadError(new Error('Initial /api/state request failed'));
+            return; // Don't start polling — user will hit Retry
+        }
         render();
+
+        // Pick up changes made from the PocketDev chat tool
+        startPolling();
     }
 
     // Start the app
@@ -1009,6 +1315,13 @@ const App = (() => {
         cleanup,
         exportData,
         importData,
-        dismissBackupBanner
+        retryInit,
+        sortBy,
+        setColFilter,
+        toggleColFilterValue,
+        clearColFilter,
+        toggleFilterPopover,
+        snoozeTodo,
+        unsnoozeTodo
     };
 })();

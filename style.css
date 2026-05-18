@@ -33,6 +33,219 @@ body {
     font-weight: 700;
 }
 
+/* API status indicator — small dot next to the title.
+   Green = backend reachable, red = unreachable. */
+.api-status {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: auto;
+    background: #888;
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.15);
+    transition: background 0.2s ease;
+}
+.api-status.online { background: #22c55e; }
+.api-status.offline { background: #ef4444; animation: api-blink 1.5s ease-in-out infinite; }
+@keyframes api-blink { 50% { opacity: 0.4; } }
+
+/* Honor the OS-level "reduce motion" preference — some users
+   experience nausea or migraines from looping UI animations. */
+@media (prefers-reduced-motion: reduce) {
+    .api-status.offline { animation: none; }
+}
+
+/* Visually hide content but keep it readable by screen readers
+   (used for the aria-live status label). */
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    /* clip-path is the modern replacement for the deprecated `clip` property.
+       Keeps element measurable by AT (screen readers) while hidden visually. */
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* Full-screen "backend unreachable" error overlay shown when the
+   initial /api/state request fails. Distinct from the small status
+   dot so the user can't miss it. */
+.load-error {
+    max-width: 560px;
+    margin: 48px auto;
+    padding: 32px;
+    background: #fff;
+    border: 1px solid #fecaca;
+    border-left: 4px solid #ef4444;
+    border-radius: 8px;
+    color: #1a1a2e;
+}
+.load-error h2 { color: #b91c1c; margin-bottom: 12px; }
+.load-error p { margin-bottom: 12px; }
+.load-error pre {
+    background: #f5f5f7;
+    padding: 12px;
+    border-radius: 4px;
+    font-family: SFMono-Regular, Consolas, monospace;
+    font-size: 13px;
+    margin-bottom: 16px;
+    overflow-x: auto;
+}
+.load-error button { margin-top: 8px; }
+.load-error details { margin-top: 16px; font-size: 13px; color: #666; }
+
+/* === Table upgrade: clickable headers + filter row + snooze visuals === */
+
+/* Clickable sortable headers */
+.todo-table th.sortable {
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.1s ease;
+}
+.todo-table th.sortable:hover { background: #f5f5f7; }
+.todo-table .sort-indicator {
+    display: inline-block;
+    font-size: 11px;
+    color: #aaa;
+    margin-left: 2px;
+}
+.todo-table .sort-indicator.active {
+    color: #1a1a2e;
+    font-weight: 600;
+}
+
+/* Filter row under the header */
+.todo-table thead .filter-row th {
+    padding: 4px 6px;
+    background: #fafafa;
+    border-bottom: 1px solid #e0e0e0;
+    font-weight: normal;
+}
+.todo-table .col-filter {
+    width: 100%;
+    padding: 3px 6px;
+    border: 1px solid #d0d0d0;
+    border-radius: 3px;
+    font-size: 12px;
+    background: #fff;
+    box-sizing: border-box;
+}
+.todo-table .col-filter:focus {
+    outline: none;
+    border-color: #888;
+}
+
+/* Action column — pin to the right with a subtle separator */
+.todo-table .actions-cell {
+    text-align: right;
+    white-space: nowrap;
+    border-left: 1px solid #f0f0f0;
+}
+.todo-table .actions-cell .btn-icon {
+    padding: 2px 4px;
+}
+
+/* Snoozed rows + badge — appear muted; visible in "All Items" view only */
+.todo-table tr.snoozed { opacity: 0.55; }
+.snooze-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    background: #e0e7ff;
+    color: #4338ca;
+    font-size: 11px;
+    font-weight: normal;
+}
+
+/* Empty-results row inside the table body (keeps headers + filter row visible). */
+.todo-table tr.empty-row td {
+    padding: 24px;
+    text-align: center;
+    color: #888;
+    font-style: italic;
+    background: #fafafa;
+}
+
+/* === Multi-select filter (button + popover with checkboxes) === */
+
+/* The TH wrapping each multi-filter button needs relative positioning so
+   the popover anchors below it. */
+.todo-table th.multi-filter-cell {
+    position: relative;
+    overflow: visible;
+}
+
+/* Button styled like a select but compact. Active = has selections. */
+.col-filter-btn {
+    width: 100%;
+    padding: 3px 6px;
+    border: 1px solid #d0d0d0;
+    border-radius: 3px;
+    background: #fff;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+    box-sizing: border-box;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 4px;
+}
+.col-filter-btn:hover { border-color: #888; }
+.col-filter-btn.active {
+    border-color: #6366f1;
+    background: #eef2ff;
+    color: #4338ca;
+    font-weight: 500;
+}
+.col-filter-btn .caret { color: #888; font-size: 10px; }
+.col-filter-btn.active .caret { color: #6366f1; }
+
+/* Popover panel. Anchored below its button, scrollable when many options. */
+.col-filter-popover {
+    display: none;
+    position: absolute;
+    top: calc(100% + 2px);
+    left: 0;
+    min-width: 180px;
+    max-width: 280px;
+    max-height: 280px;
+    overflow-y: auto;
+    background: #fff;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+    padding: 4px 0;
+    z-index: 20;
+    font-size: 13px;
+    font-weight: normal;
+}
+.col-filter-popover.open { display: block; }
+.col-filter-popover label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    cursor: pointer;
+    user-select: none;
+    color: #333;
+}
+.col-filter-popover label:hover { background: #f3f4f6; }
+.col-filter-popover label.all-row {
+    border-bottom: 1px solid #e5e7eb;
+    margin-bottom: 4px;
+}
+.col-filter-popover label.reserved-tag {
+    color: #4338ca;
+    font-weight: 500;
+}
+.col-filter-popover .popover-options { padding: 2px 0; }
+
 /* ===== Sidebar ===== */
 .sidebar {
     background: #fff;
@@ -89,15 +302,31 @@ body {
 }
 
 .view-toggle li {
+    list-style: none;
+}
+
+/* The clickable element is a real <button> for keyboard accessibility.
+   Style it to look like the previous <li>: full-width, padded, no border. */
+.view-toggle-btn {
+    display: block;
+    width: 100%;
+    text-align: left;
     padding: 8px 12px;
     border-radius: 6px;
     cursor: pointer;
     font-size: 14px;
     transition: background 0.15s;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    font-family: inherit;
 }
-
-.view-toggle li:hover { background: #f0f2f5; }
-.view-toggle li.active { background: #e8eaf6; font-weight: 600; }
+.view-toggle-btn:hover { background: #f0f2f5; }
+.view-toggle-btn.active { background: #e8eaf6; font-weight: 600; }
+.view-toggle-btn:focus-visible {
+    outline: 2px solid #6366f1;
+    outline-offset: 1px;
+}
 
 /* ===== Main Content ===== */
 .main {
@@ -171,7 +400,8 @@ body {
     border-collapse: collapse;
     background: #fff;
     border-radius: 8px;
-    overflow: hidden;
+    /* No overflow:hidden — would clip the multi-select filter popover.
+       The slight loss of corner-clipping is invisible in practice. */
     box-shadow: 0 1px 3px rgba(0,0,0,0.08);
 }
 
@@ -412,22 +642,6 @@ body {
     padding: 4px !important;
     font-size: 13px;
 }
-
-/* ===== Backup banner ===== */
-.backup-banner {
-    display: none;
-    background: #fef3c7;
-    border: 1px solid #f59e0b;
-    border-radius: 8px;
-    padding: 12px 20px;
-    margin-bottom: 16px;
-    align-items: center;
-    justify-content: space-between;
-}
-
-.backup-banner.show { display: flex; }
-
-.backup-banner p { font-size: 14px; color: #92400e; }
 
 /* ===== Empty state ===== */
 .empty-state {
