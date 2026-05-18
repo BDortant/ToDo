@@ -60,7 +60,11 @@ app.post('/api/todos', wrap((req) => {
 
 app.patch('/api/todos/:id', wrap((req) => {
     const body = req.body || {};
-    if (body.project && body.projectId === undefined) {
+    // Align with POST: treat any falsy projectId as "resolve from project
+    // name if one was given". Prevents the surprising case where
+    // {project:"Hendrix", projectId:""} would silently clear the project
+    // on PATCH but set it on POST.
+    if (body.project && !body.projectId) {
         const p = resolveProject(body.project);
         if (!p) throw new HttpError(400, `Unknown project: ${body.project}`);
         body.projectId = p.id;

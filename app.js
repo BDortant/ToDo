@@ -684,9 +684,16 @@ docker compose up -d</pre>
         }).join('');
 
         // View toggle — "All items" is active when no project selected.
-        document.querySelectorAll('#view-toggle li').forEach(li => {
-            const isActive = li.dataset.view === currentView && !(li.dataset.view === 'all' && selectedProjectId);
-            li.classList.toggle('active', isActive);
+        // Buttons (not <li>) carry the click handler so keyboard works.
+        document.querySelectorAll('#view-toggle .view-toggle-btn').forEach(btn => {
+            const isActive = btn.dataset.view === currentView && !(btn.dataset.view === 'all' && selectedProjectId);
+            btn.classList.toggle('active', isActive);
+            btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+            if (isActive) {
+                btn.setAttribute('aria-current', 'page');
+            } else {
+                btn.removeAttribute('aria-current');
+            }
         });
 
         // Main title
@@ -1073,6 +1080,14 @@ docker compose up -d</pre>
 
         const useProjectPriority = currentView === 'by-project' || selectedProjectId;
         const key = useProjectPriority ? 'projectPriority' : 'overallPriority';
+
+        // In project-priority mode, refuse cross-project drops — the projectPriority
+        // spaces are per-project, so renumbering against a row in a different
+        // project would corrupt both projects' priority sequences.
+        if (useProjectPriority && draggedTodo.projectId !== targetTodo.projectId) {
+            draggedRowId = null;
+            return;
+        }
 
         const fromPos = draggedTodo[key];
         const toPos = targetTodo[key];

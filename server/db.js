@@ -855,7 +855,14 @@ export function resolveProject(needle) {
     if (byId) return byId;
     const byExactName = db.prepare('SELECT * FROM projects WHERE name = ? COLLATE NOCASE').get(needle);
     if (byExactName) return rowToProject(byExactName);
-    const byFuzzy = db.prepare("SELECT * FROM projects WHERE name LIKE ? COLLATE NOCASE LIMIT 1").get(`%${needle}%`);
+    // Escape LIKE wildcards in the needle so a stray `%` or `_` (e.g. from
+    // chat input or a project named "100% done") isn't interpreted as a
+    // SQL wildcard. Use an explicit ESCAPE clause so the backslash literal
+    // is recognized as the escape character.
+    const escaped = String(needle).replace(/[\\%_]/g, '\\$&');
+    const byFuzzy = db.prepare(
+        "SELECT * FROM projects WHERE name LIKE ? ESCAPE '\\' COLLATE NOCASE LIMIT 1"
+    ).get(`%${escaped}%`);
     return byFuzzy ? rowToProject(byFuzzy) : null;
 }
 

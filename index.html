@@ -22,9 +22,17 @@
     <aside class="sidebar">
         <div class="sidebar-section">
             <h2>Views</h2>
-            <ul class="view-toggle" id="view-toggle">
-                <li class="active" data-view="all" onclick="App.setView('all')">All items</li>
-                <li data-view="by-project" onclick="App.setView('by-project')">By project</li>
+            <ul class="view-toggle" id="view-toggle" role="tablist" aria-label="View modes">
+                <li role="presentation">
+                    <button type="button" class="view-toggle-btn active" data-view="all"
+                            role="tab" aria-selected="true" aria-current="page"
+                            onclick="App.setView('all')">All items</button>
+                </li>
+                <li role="presentation">
+                    <button type="button" class="view-toggle-btn" data-view="by-project"
+                            role="tab" aria-selected="false"
+                            onclick="App.setView('by-project')">By project</button>
+                </li>
             </ul>
         </div>
         <div class="sidebar-section">
@@ -168,9 +176,9 @@
 
             <div class="form-row">
                 <div class="form-group">
-                    <label>Snooze until (optional)</label>
-                    <input type="date" id="todo-snooze-until">
-                    <small style="color:#888;font-size:11px">Hides from Today/Now until this date.</small>
+                    <label for="todo-snooze-until">Snooze until (optional)</label>
+                    <input type="date" id="todo-snooze-until" aria-describedby="todo-snooze-until-help">
+                    <small id="todo-snooze-until-help" style="color:#888;font-size:11px">Hides from Today/Now until this date.</small>
                 </div>
             </div>
 

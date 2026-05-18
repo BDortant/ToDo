@@ -64,7 +64,9 @@ body {
     margin: -1px;
     padding: 0;
     overflow: hidden;
-    clip: rect(0, 0, 0, 0);
+    /* clip-path is the modern replacement for the deprecated `clip` property.
+       Keeps element measurable by AT (screen readers) while hidden visually. */
+    clip-path: inset(50%);
     white-space: nowrap;
     border: 0;
 }
@@ -300,15 +302,31 @@ body {
 }
 
 .view-toggle li {
+    list-style: none;
+}
+
+/* The clickable element is a real <button> for keyboard accessibility.
+   Style it to look like the previous <li>: full-width, padded, no border. */
+.view-toggle-btn {
+    display: block;
+    width: 100%;
+    text-align: left;
     padding: 8px 12px;
     border-radius: 6px;
     cursor: pointer;
     font-size: 14px;
     transition: background 0.15s;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    font-family: inherit;
 }
-
-.view-toggle li:hover { background: #f0f2f5; }
-.view-toggle li.active { background: #e8eaf6; font-weight: 600; }
+.view-toggle-btn:hover { background: #f0f2f5; }
+.view-toggle-btn.active { background: #e8eaf6; font-weight: 600; }
+.view-toggle-btn:focus-visible {
+    outline: 2px solid #6366f1;
+    outline-offset: 1px;
+}
 
 /* ===== Main Content ===== */
 .main {
