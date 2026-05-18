@@ -1109,13 +1109,14 @@ docker compose up -d</pre>
             t.status !== 'Done' && t.status !== 'Cancelled' &&
             t.id !== draggedTodo.id
         );
-        const newProj = 1 + sameProject.filter(t => {
-            // After the shift, items that were < newOverall stay below; items
-            // at >= newOverall shift down. So same-project items below the
-            // drop slot stay below, and same-project items at-or-above shift
-            // by 1. The dragged item itself ends up at exactly newOverall.
-            return t.overallPriority < newOverall;
-        }).length;
+        // Direction matters: moving DOWN shifts items in (fromPos, toPos]
+        // up by 1, so the target same-project row ends up below newOverall
+        // — it must be counted. Moving UP shifts items in [toPos, fromPos)
+        // down by 1, so the target ends up above newOverall — excluded.
+        const movingDown = draggedTodo.overallPriority < targetTodo.overallPriority;
+        const newProj = 1 + sameProject.filter(t =>
+            movingDown ? t.overallPriority <= newOverall : t.overallPriority < newOverall
+        ).length;
 
         let badge = document.getElementById('drop-badge');
         if (!badge) {
