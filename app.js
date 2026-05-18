@@ -1067,24 +1067,74 @@ docker compose up -d</pre>
         const row = e.currentTarget;
         row.classList.remove('drag-over-top', 'drag-over-bottom');
 
-        // Determine drag direction to show the indicator on the correct side
         const targetId = row.dataset.id;
         const draggedTodo = data.todos.find(t => t.id === draggedRowId);
         const targetTodo = data.todos.find(t => t.id === targetId);
         if (!draggedTodo || !targetTodo) return;
 
+        // Same-project guard in by-project view: hide indicator + badge for invalid drops.
         const useProjectPriority = currentView === 'by-project' || selectedProjectId;
-        const key = useProjectPriority ? 'projectPriority' : 'overallPriority';
+        if (useProjectPriority && draggedTodo.projectId !== targetTodo.projectId) {
+            hideDropBadge();
+            return;
+        }
 
-        if (draggedTodo[key] < targetTodo[key]) {
+        // Direction indicator (line above vs below the target row)
+        if (draggedTodo.overallPriority < targetTodo.overallPriority) {
             row.classList.add('drag-over-bottom');
         } else {
             row.classList.add('drag-over-top');
         }
+
+        // Drop-target badge: project both O# and P# the dragged item would
+        // land at, so the user knows what they're committing to. Useful
+        // mostly when dragging in by-project view (where the overall change
+        // is invisible) and vice versa.
+        showDropBadge(row, draggedTodo, targetTodo);
     }
 
     function onDragLeave(e) {
         e.currentTarget.classList.remove('drag-over-top', 'drag-over-bottom');
+        hideDropBadge();
+    }
+
+    // Computes the (O#, P#) the dragged item would have after dropping on
+    // the target, then renders a small badge anchored to the target row.
+    function showDropBadge(row, draggedTodo, targetTodo) {
+        const newOverall = targetTodo.overallPriority;
+        // Project rank = number of same-project items whose overall_priority
+        // is <= newOverall (including the dragged item itself).
+        const sameProject = data.todos.filter(t =>
+            t.projectId === draggedTodo.projectId &&
+            t.status !== 'Done' && t.status !== 'Cancelled' &&
+            t.id !== draggedTodo.id
+        );
+        // Direction matters: moving DOWN shifts items in (fromPos, toPos]
+        // up by 1, so the target same-project row ends up below newOverall
+        // — it must be counted. Moving UP shifts items in [toPos, fromPos)
+        // down by 1, so the target ends up above newOverall — excluded.
+        const movingDown = draggedTodo.overallPriority < targetTodo.overallPriority;
+        const newProj = 1 + sameProject.filter(t =>
+            movingDown ? t.overallPriority <= newOverall : t.overallPriority < newOverall
+        ).length;
+
+        let badge = document.getElementById('drop-badge');
+        if (!badge) {
+            badge = document.createElement('div');
+            badge.id = 'drop-badge';
+            badge.className = 'drop-badge';
+            document.body.appendChild(badge);
+        }
+        badge.textContent = `→ O#${newOverall} · P#${newProj}`;
+        const rect = row.getBoundingClientRect();
+        badge.style.top = `${rect.top + window.scrollY + 4}px`;
+        badge.style.left = `${rect.right + window.scrollX - 8}px`;
+        badge.style.display = 'block';
+    }
+
+    function hideDropBadge() {
+        const badge = document.getElementById('drop-badge');
+        if (badge) badge.style.display = 'none';
     }
 
     async function onDrop(e) {
@@ -1098,43 +1148,44 @@ docker compose up -d</pre>
         if (!draggedTodo || !targetTodo) return;
 
         const useProjectPriority = currentView === 'by-project' || selectedProjectId;
-        const key = useProjectPriority ? 'projectPriority' : 'overallPriority';
 
-        // In project-priority mode, refuse cross-project drops — the projectPriority
-        // spaces are per-project, so renumbering against a row in a different
-        // project would corrupt both projects' priority sequences.
+        // Cross-project drops are nonsensical in project view: refuse them up-front.
         if (useProjectPriority && draggedTodo.projectId !== targetTodo.projectId) {
             draggedRowId = null;
             return;
         }
 
-        const fromPos = draggedTodo[key];
-        const toPos = targetTodo[key];
+        // All drags — in either view — operate on overall_priority. The server
+        // derives project_priority from overall_priority after each change, so
+        // the two views can never disagree.
+        //
+        // In by-project view, dragging item X to be just before item Y means
+        // X takes Y's current overall slot; items between X's old slot and
+        // Y's slot shift to fill the gap. Non-project items in that range
+        // also shift (their relative order is preserved).
+        const fromPos = draggedTodo.overallPriority;
+        const toPos = targetTodo.overallPriority;
 
-        const affected = useProjectPriority
-            ? data.todos.filter(t => t.projectId === draggedTodo.projectId)
-            : data.todos;
-
-        // Compute the new priorities locally, then send a single bulk reorder request.
         const updates = [];
         if (fromPos < toPos) {
-            affected.forEach(t => {
+            data.todos.forEach(t => {
                 if (t === draggedTodo) return;
-                if (t[key] > fromPos && t[key] <= toPos) {
-                    updates.push({ id: t.id, [key]: t[key] - 1 });
+                if (t.overallPriority > fromPos && t.overallPriority <= toPos) {
+                    updates.push({ id: t.id, overallPriority: t.overallPriority - 1 });
                 }
             });
         } else {
-            affected.forEach(t => {
+            data.todos.forEach(t => {
                 if (t === draggedTodo) return;
-                if (t[key] >= toPos && t[key] < fromPos) {
-                    updates.push({ id: t.id, [key]: t[key] + 1 });
+                if (t.overallPriority >= toPos && t.overallPriority < fromPos) {
+                    updates.push({ id: t.id, overallPriority: t.overallPriority + 1 });
                 }
             });
         }
-        updates.push({ id: draggedTodo.id, [key]: toPos });
+        updates.push({ id: draggedTodo.id, overallPriority: toPos });
 
         try {
+            hideDropBadge();
             await StorageService.reorderTodos(updates);
             await reloadState();
             render();
@@ -1147,6 +1198,7 @@ docker compose up -d</pre>
         e.currentTarget.classList.remove('dragging');
         draggedRowId = null;
         document.querySelectorAll('.drag-over-top, .drag-over-bottom').forEach(el => el.classList.remove('drag-over-top', 'drag-over-bottom'));
+        hideDropBadge();
     }
 
     // --- Export / Import ---
