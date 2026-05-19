@@ -149,6 +149,24 @@ body {
     padding: 2px 4px;
 }
 
+/* Floating drop-target badge shown while dragging. Position is set
+   inline by JS based on the hovered row's bounding rect. */
+.drop-badge {
+    display: none;
+    position: absolute;
+    z-index: 1000;
+    transform: translateX(-100%);
+    padding: 3px 8px;
+    background: #4338ca;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 4px;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+    pointer-events: none;
+    white-space: nowrap;
+}
+
 /* Snoozed rows + badge — appear muted; visible in "All Items" view only */
 .todo-table tr.snoozed { opacity: 0.55; }
 .snooze-badge {

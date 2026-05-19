@@ -732,7 +732,10 @@ function normalize() {
         `UPDATE todos SET overall_priority = 0 WHERE status IN (${OFF_QUEUE_SQL_LIST})`
     ).run();
 
-    // Per-project ranks (include the "no project" bucket for completeness)
+    // Per-project ranks (include the "no project" bucket for completeness).
+    // project_priority is now DERIVED from overall_priority — we order each
+    // project's items by their (just-assigned) overall_priority and number
+    // them 1..N. This guarantees the two views can never disagree.
     const projectIds = db.prepare(
         `SELECT DISTINCT COALESCE(project_id, '') AS pid FROM todos
          WHERE status NOT IN (${OFF_QUEUE_SQL_LIST})`
@@ -744,7 +747,7 @@ function normalize() {
             `SELECT id FROM todos
              WHERE status NOT IN (${OFF_QUEUE_SQL_LIST})
              AND COALESCE(project_id, '') = ?
-             ORDER BY project_priority ASC, created_date ASC, id ASC`
+             ORDER BY overall_priority ASC, created_date ASC, id ASC`
         ).all(pid);
         rows.forEach((row, i) => setProject.run(i + 1, row.id));
     }
