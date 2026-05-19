@@ -247,6 +247,17 @@ export function createTodo(input) {
     const overallPriority = offQueue ? 0 : nextOverallPriority();
     const projectPriority = offQueue ? 0 : nextProjectPriority(projectId);
 
+    // Recurring tasks with no explicit deadline default to the next matching
+    // weekday. Without this they'd sit deadline-less until first marked Done
+    // (when spawnNextRecurrence sets one on the NEXT occurrence) — which
+    // defeats the point of being recurring. Mirrors the spawn-side logic.
+    const recurringDays = normalizeDays(input.recurringDays);
+    const isRecurring = !!input.isRecurring;
+    let deadline = input.deadline ?? TODO_DEFAULTS.deadline;
+    if (!deadline && isRecurring && recurringDays.length > 0) {
+        deadline = getNextMatchingDay(recurringDays);
+    }
+
     const todo = {
         id,
         title: String(input.title).trim(),
@@ -255,7 +266,7 @@ export function createTodo(input) {
         overallPriority,
         projectPriority,
         effort: input.effort ?? TODO_DEFAULTS.effort,
-        deadline: input.deadline ?? TODO_DEFAULTS.deadline,
+        deadline,
         assignee: typeof input.assignee === 'string' ? input.assignee.trim() : (input.assignee ?? ''),
         notes: input.notes ?? TODO_DEFAULTS.notes,
         tags: Array.isArray(input.tags) ? input.tags : TODO_DEFAULTS.tags,
@@ -263,9 +274,9 @@ export function createTodo(input) {
         updatedDate: nowIso,
         completedDate: offQueue ? nowIso : null,
         snoozeUntil: input.snoozeUntil || null,
-        isRecurring: !!input.isRecurring,
+        isRecurring,
         recurringWeeks: clampWeeks(input.recurringWeeks),
-        recurringDays: normalizeDays(input.recurringDays)
+        recurringDays
     };
 
     const tx = db.transaction(() => {
@@ -298,6 +309,17 @@ export function patchTodo(id, patch) {
         if (patch.isRecurring !== undefined) updates.is_recurring = patch.isRecurring ? 1 : 0;
         if (patch.recurringWeeks !== undefined) updates.recurring_weeks = clampWeeks(patch.recurringWeeks);
         if (patch.recurringDays !== undefined) updates.recurring_days = JSON.stringify(normalizeDays(patch.recurringDays));
+
+        // When recurring is turned ON (or recurring days are added) AND the
+        // task still has no deadline, default the deadline to the next
+        // matching weekday. Mirrors the behavior in createTodo so a task that
+        // becomes recurring after creation gets the same treatment.
+        const willBeRecurring = patch.isRecurring !== undefined ? !!patch.isRecurring : existing.isRecurring;
+        const finalDays = patch.recurringDays !== undefined ? normalizeDays(patch.recurringDays) : (existing.recurringDays || []);
+        const finalDeadline = patch.deadline !== undefined ? (patch.deadline || '') : (existing.deadline || '');
+        if (willBeRecurring && finalDays.length > 0 && !finalDeadline) {
+            updates.deadline = getNextMatchingDay(finalDays);
+        }
         if (patch.snoozeUntil !== undefined) {
             // null / empty string = unsnooze; otherwise expect YYYY-MM-DD
             const v = patch.snoozeUntil;
