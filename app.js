@@ -100,6 +100,8 @@ const ApiStatus = (() => {
 const App = (() => {
     let data = { projects: [], todos: [], lastBackup: null };
 
+    const NO_PROJECT_ID = '__no_project__'; // sentinel for the pinned "No Project" pseudo-project
+
     let currentView = 'all';           // 'all' or 'by-project'
     let selectedProjectId = null;      // filter in sidebar
     let editingTodoTags = [];          // temp tags for the form
@@ -264,7 +266,9 @@ docker compose up -d</pre>
         let todos = data.todos;
 
         // Filter by project if specified
-        if (projectId) {
+        if (projectId === NO_PROJECT_ID) {
+            todos = todos.filter(t => !t.projectId);
+        } else if (projectId) {
             todos = todos.filter(t => t.projectId === projectId);
         }
 
@@ -687,9 +691,15 @@ docker compose up -d</pre>
 
     // --- Render ---
     function render() {
-        // Sidebar: project list
+        // Sidebar: project list — pinned "No Project" pseudo-entry first, then real projects
         const projectList = document.getElementById('project-list');
-        projectList.innerHTML = data.projects.map(p => {
+        const noProjectCount = data.todos.filter(t => !t.projectId).length;
+        const noProjectActive = selectedProjectId === NO_PROJECT_ID ? 'active' : '';
+        const noProjectItem = `<li class="project-item project-item-no-project ${noProjectActive}" data-id="${NO_PROJECT_ID}" onclick="App.selectProject(this.dataset.id)">
+            <span><em>No Project</em> <span class="project-count">${noProjectCount}</span></span>
+        </li>`;
+
+        projectList.innerHTML = noProjectItem + data.projects.map(p => {
             const count = data.todos.filter(t => t.projectId === p.id).length;
             const active = selectedProjectId === p.id ? 'active' : '';
             const safePid = escapeAttr(p.id);
@@ -722,7 +732,11 @@ docker compose up -d</pre>
         const container = document.getElementById('main-content');
 
         if (currentView === 'all') {
-            if (selectedProjectId) {
+            if (selectedProjectId === NO_PROJECT_ID) {
+                titleEl.textContent = 'No Project';
+                const todos = getFilteredTodos(NO_PROJECT_ID);
+                container.innerHTML = buildTable(todos, false, 'overall');
+            } else if (selectedProjectId) {
                 titleEl.textContent = getProjectName(selectedProjectId);
                 const todos = getFilteredTodos(selectedProjectId);
                 container.innerHTML = buildTable(todos, false, 'project');
@@ -863,7 +877,7 @@ docker compose up -d</pre>
             titleEl.textContent = 'New To-Do';
             document.getElementById('todo-id').value = '';
             document.getElementById('todo-title').value = '';
-            document.getElementById('todo-project').value = selectedProjectId || '';
+            document.getElementById('todo-project').value = (selectedProjectId && selectedProjectId !== NO_PROJECT_ID) ? selectedProjectId : '';
             document.getElementById('todo-status').value = 'To Do';
             document.getElementById('todo-effort').value = '';
             document.getElementById('todo-deadline').value = '';

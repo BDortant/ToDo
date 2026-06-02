@@ -305,6 +305,9 @@ body {
 
 .project-item:hover .project-item-actions { display: flex; }
 
+.project-item-no-project { color: #888; }
+.project-item-no-project.active { color: #1a1a2e; }
+
 .project-count {
     background: #e0e0e0;
     border-radius: 10px;
