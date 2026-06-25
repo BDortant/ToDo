@@ -800,7 +800,11 @@ docker compose up -d</pre>
     // attribute, so it must be set from JS after each render. Covers every table
     // (the by-project view renders one tags popover per group).
     function syncTagsAllCheckbox() {
-        const total = new Set([UNTAGGED_FILTER, ...RESERVED_FILTER_TAGS, ...data.todos.flatMap(t => t.tags || [])]).size;
+        const valid = new Set([UNTAGGED_FILTER, ...RESERVED_FILTER_TAGS, ...data.todos.flatMap(t => t.tags || [])]);
+        // Drop hidden tags that no longer exist (e.g. a tag removed from every
+        // todo) so the button label and (all) indeterminate state stay accurate.
+        colFilters.tags = colFilters.tags.filter(t => valid.has(t));
+        const total = valid.size;
         const hidden = colFilters.tags.length;
         const partial = hidden > 0 && hidden < total;
         document.querySelectorAll('[data-tags-all]').forEach(cb => { cb.indeterminate = partial; });
