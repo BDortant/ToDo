@@ -119,7 +119,9 @@ const App = (() => {
         project: [],         // enum multi-select (project names)
         status: [],          // enum multi-select
         effort: [],          // enum multi-select (incl. '' for "no effort")
-        tags: []             // enum multi-select (real tags + 'snoozed' virtual)
+        tags: []             // enum multi-select EXCLUDE filter: holds the
+                             // UNticked (hidden) tags. Empty = all ticked = show
+                             // everything (real tags + 'snoozed' virtual).
     };
 
     // Which filter popover is currently open (only one at a time).
@@ -130,6 +132,11 @@ const App = (() => {
     // matches items with snoozeUntil in the future (driven by the backend
     // snooze_until column, not a real tag).
     const RESERVED_FILTER_TAGS = ['delegatable', 'watching', 'snoozed'];
+
+    // Virtual tag-filter entry that controls items with NO tags. Shown in the
+    // dropdown as "(no tags)"; unticking it hides untagged items. It's a sentinel
+    // value (not a real tag) so it can never collide with the user's own tags.
+    const UNTAGGED_FILTER = '__untagged__';
 
     // --- Helpers ---
 
@@ -366,16 +373,23 @@ docker compose up -d</pre>
         if (f.status.length)  todos = todos.filter(t => f.status.includes(t.status));
         if (f.effort.length)  todos = todos.filter(t => f.effort.includes(t.effort || ''));
         if (f.tags.length) {
+            // EXCLUDE filter: f.tags holds the UNticked (hidden) tags. An item is
+            // hidden when it carries any hidden tag (or is snoozed and 'snoozed' is
+            // hidden); everything else stays visible. So unticking 'watching'
+            // shows all items except the watching ones.
             todos = todos.filter(t => {
                 for (const sel of f.tags) {
                     // 'snoozed' is a virtual filter — matches snoozed items via snoozeUntil
                     if (sel === 'snoozed') {
-                        if (t.snoozeUntil && t.snoozeUntil > today) return true;
+                        if (t.snoozeUntil && t.snoozeUntil > today) return false;
+                    // '(no tags)' is a virtual filter — matches items with no tags
+                    } else if (sel === UNTAGGED_FILTER) {
+                        if (!(t.tags && t.tags.length)) return false;
                     } else if ((t.tags || []).includes(sel)) {
-                        return true;
+                        return false;
                     }
                 }
-                return false;
+                return true;
             });
         }
 
@@ -401,14 +415,18 @@ docker compose up -d</pre>
 
         // Multi-select enum filter: button + popover with checkboxes.
         // Selected count shown on button. Click outside to close.
-        const tfMulti = (key, options, labelFor) => {
+        // `invert` switches a column to EXCLUDE semantics (used for tags): every
+        // option is ticked by default and unticking one hides its rows. In that
+        // mode `selected` holds the UNticked (hidden) values.
+        const tfMulti = (key, options, labelFor, invert = false) => {
             const selected = colFilters[key] || [];
             const isOpen = openPopoverKey === key;
+            const single = labelFor ? labelFor(selected[0]) : (selected[0] || '—');
             const btnLabel = selected.length === 0
                 ? 'all'
                 : (selected.length === 1
-                    ? (labelFor ? labelFor(selected[0]) : (selected[0] || '—'))
-                    : `${selected.length} selected`);
+                    ? (invert ? `except ${single}` : single)
+                    : `${selected.length} ${invert ? 'hidden' : 'selected'}`);
             const btnClass = selected.length > 0 ? 'col-filter-btn active' : 'col-filter-btn';
             return `<th class="multi-filter-cell">
                 <button type="button" class="${btnClass}" data-filter-key="${key}" onclick="event.stopPropagation(); App.toggleFilterPopover('${key}')">
@@ -416,16 +434,16 @@ docker compose up -d</pre>
                 </button>
                 <div class="col-filter-popover${isOpen ? ' open' : ''}" data-popover-key="${key}">
                     <label class="all-row">
-                        <input type="checkbox" ${selected.length === 0 ? 'checked' : ''} onchange="App.clearColFilter('${key}')">
+                        <input type="checkbox" ${invert ? 'data-tags-all' : ''} ${selected.length === 0 ? 'checked' : ''} onchange="${invert ? 'App.toggleAllTags()' : `App.clearColFilter('${key}')`}">
                         <em>(all)</em>
                     </label>
                     <div class="popover-options">
                         ${options.map(o => {
                             const label = labelFor ? labelFor(o) : (o || '—');
-                            const isReserved = key === 'tags' && RESERVED_FILTER_TAGS.includes(o);
+                            const isReserved = key === 'tags' && (RESERVED_FILTER_TAGS.includes(o) || o === UNTAGGED_FILTER);
                             return `<label class="${isReserved ? 'reserved-tag' : ''}">
                                 <input type="checkbox" value="${escapeAttr(o)}"
-                                       ${selected.includes(o) ? 'checked' : ''}
+                                       ${(invert ? !selected.includes(o) : selected.includes(o)) ? 'checked' : ''}
                                        onchange="App.toggleColFilterValue('${key}', this.value)">
                                 ${escapeHTML(label)}
                             </label>`;
@@ -438,7 +456,10 @@ docker compose up -d</pre>
         // Collect distinct values. Project from project list; tags merged with
         // reserved filter tags so delegatable/watching/snoozed always show.
         const distinctTagsSet = new Set([...RESERVED_FILTER_TAGS, ...data.todos.flatMap(t => t.tags || [])]);
-        const distinctTags = [...distinctTagsSet].sort((a, b) => a.localeCompare(b));
+        // '(no tags)' pinned first so it's easy to find; the rest sorted alphabetically.
+        const distinctTags = [UNTAGGED_FILTER, ...[...distinctTagsSet].sort((a, b) => a.localeCompare(b))];
+        // Friendly label for the tags dropdown (sentinel → "(no tags)").
+        const tagLabel = (o) => o === UNTAGGED_FILTER ? '(no tags)' : (o || '—');
         const projectFilterOptions = data.projects.slice()
             .sort((a, b) => a.name.localeCompare(b.name))
             .map(p => p.name);
@@ -470,7 +491,7 @@ docker compose up -d</pre>
                     ${tfText('deadline', 'YYYY-MM')}
                     ${tfText('assignee', 'filter…')}
                     <th></th>
-                    ${tfMulti('tags', distinctTags)}
+                    ${tfMulti('tags', distinctTags, tagLabel, true)}
                     <th></th>
                 </tr>
             </thead><tbody>`;
@@ -621,6 +642,16 @@ docker compose up -d</pre>
         render();
     }
 
+    // The tags filter's (all) checkbox is a two-way toggle (exclude model):
+    // when nothing is hidden it HIDES every tag (untick all boxes); otherwise it
+    // SHOWS everything (re-tick all boxes). Computes the full tag set the same way
+    // the dropdown does, so 'hide all' lists every tag as hidden.
+    function toggleAllTags() {
+        const allTags = [UNTAGGED_FILTER, ...new Set([...RESERVED_FILTER_TAGS, ...data.todos.flatMap(t => t.tags || [])])];
+        colFilters.tags = colFilters.tags.length === 0 ? allTags : [];
+        render();
+    }
+
     // Toggle the popover panel for a multi-select filter. Only one open at a
     // time. Closes when the user clicks outside (see init's document handler).
     function toggleFilterPopover(key) {
@@ -759,6 +790,20 @@ docker compose up -d</pre>
 
             container.innerHTML = html;
         }
+
+        syncTagsAllCheckbox();
+    }
+
+    // The tags filter uses an exclude model, so the (all) checkbox reflects three
+    // states: ticked = nothing hidden, unticked = everything hidden, dash
+    // (indeterminate) = only some tags hidden. "indeterminate" has no HTML
+    // attribute, so it must be set from JS after each render. Covers every table
+    // (the by-project view renders one tags popover per group).
+    function syncTagsAllCheckbox() {
+        const total = new Set([UNTAGGED_FILTER, ...RESERVED_FILTER_TAGS, ...data.todos.flatMap(t => t.tags || [])]).size;
+        const hidden = colFilters.tags.length;
+        const partial = hidden > 0 && hidden < total;
+        document.querySelectorAll('[data-tags-all]').forEach(cb => { cb.indeterminate = partial; });
     }
 
     // --- Views ---
@@ -1372,6 +1417,7 @@ docker compose up -d</pre>
         setColFilter,
         toggleColFilterValue,
         clearColFilter,
+        toggleAllTags,
         toggleFilterPopover,
         snoozeTodo,
         unsnoozeTodo
