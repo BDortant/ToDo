@@ -106,6 +106,12 @@ const App = (() => {
     let selectedProjectId = null;      // filter in sidebar
     let editingTodoTags = [];          // temp tags for the form
     let draggedRowId = null;           // drag-to-reorder
+    // Edge auto-scroll while dragging a row: the browser doesn't scroll an
+    // overflow container during an HTML5 drag, so we drive it ourselves.
+    let autoScrollRAF = null;          // requestAnimationFrame handle (null = idle)
+    let autoScrollEl = null;           // the element/window currently being scrolled
+    let autoScrollDir = 0;             // -1 up, 0 none, 1 down
+    let autoScrollSpeed = 0;           // px per frame
     let pollTimer = null;
     let pollInFlight = false;          // single-flight guard for polling
     const POLL_MS = 10000;             // cross-client sync interval
@@ -1119,10 +1125,68 @@ docker compose up -d</pre>
     }
 
     // --- Drag to reorder ---
+
+    // How close (px) to the top/bottom edge the cursor must be before the view
+    // starts scrolling, and the fastest scroll step (px per animation frame).
+    const AUTOSCROLL_EDGE = 80;
+    const AUTOSCROLL_MAX_SPEED = 22;
+
+    // Pick the element that actually scrolls and report its visible top/bottom.
+    // The table lives in `.main` (overflow-y:auto); if that isn't the scroller
+    // (short list / different layout) we fall back to the window.
+    function pickScroller() {
+        const main = document.querySelector('.main');
+        if (main && main.scrollHeight > main.clientHeight + 1) {
+            const r = main.getBoundingClientRect();
+            return { el: main, top: r.top, bottom: r.bottom };
+        }
+        return { el: window, top: 0, bottom: window.innerHeight };
+    }
+
+    // Runs once per frame while dragging; scrolls the active element until the
+    // direction is cleared (cursor leaves the edge or the drag ends).
+    function autoScrollStep() {
+        if (autoScrollDir === 0 || !autoScrollEl) { autoScrollRAF = null; return; }
+        const delta = autoScrollDir * autoScrollSpeed;
+        if (autoScrollEl === window) window.scrollBy(0, delta);
+        else autoScrollEl.scrollTop += delta;
+        autoScrollRAF = requestAnimationFrame(autoScrollStep);
+    }
+
+    // Document-level dragover: translates the cursor's vertical position into a
+    // scroll direction + speed. Speed ramps up the closer you are to the edge.
+    function onDocDragOver(e) {
+        if (!draggedRowId) return;
+        const s = pickScroller();
+        const y = e.clientY;
+        if (y < s.top + AUTOSCROLL_EDGE) {
+            autoScrollDir = -1;
+            autoScrollSpeed = Math.min(1, (s.top + AUTOSCROLL_EDGE - y) / AUTOSCROLL_EDGE) * AUTOSCROLL_MAX_SPEED;
+        } else if (y > s.bottom - AUTOSCROLL_EDGE) {
+            autoScrollDir = 1;
+            autoScrollSpeed = Math.min(1, (y - (s.bottom - AUTOSCROLL_EDGE)) / AUTOSCROLL_EDGE) * AUTOSCROLL_MAX_SPEED;
+        } else {
+            autoScrollDir = 0;
+        }
+        autoScrollEl = s.el;
+        if (autoScrollDir !== 0 && autoScrollRAF === null) {
+            autoScrollRAF = requestAnimationFrame(autoScrollStep);
+        }
+    }
+
+    function stopAutoScroll() {
+        autoScrollDir = 0;
+        if (autoScrollRAF !== null) { cancelAnimationFrame(autoScrollRAF); autoScrollRAF = null; }
+        document.removeEventListener('dragover', onDocDragOver);
+    }
+
     function onDragStart(e) {
         draggedRowId = e.currentTarget.dataset.id;
         e.currentTarget.classList.add('dragging');
         e.dataTransfer.effectAllowed = 'move';
+        // Listen at the document level so we keep scrolling even when the cursor
+        // is over gaps, the header, or past the last row.
+        document.addEventListener('dragover', onDocDragOver);
     }
 
     function onDragOver(e) {
@@ -1260,6 +1324,7 @@ docker compose up -d</pre>
     function onDragEnd(e) {
         e.currentTarget.classList.remove('dragging');
         draggedRowId = null;
+        stopAutoScroll();
         document.querySelectorAll('.drag-over-top, .drag-over-bottom').forEach(el => el.classList.remove('drag-over-top', 'drag-over-bottom'));
         hideDropBadge();
     }
