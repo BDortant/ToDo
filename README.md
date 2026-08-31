@@ -8,6 +8,7 @@ A small personal to-do app with a vanilla HTML/CSS/JS frontend and a tiny Node +
 - Drag-to-reorder priority (overall and per-project)
 - Recurring tasks that auto-spawn the next occurrence on completion
 - "Daily" view (open items + Done since last working day)
+- Per-project **Weekly update** tab: split markdown editor, live Outlook-styled preview, Copy for Outlook, and week archive (see [docs/weekly-update.md](docs/weekly-update.md))
 - Hide-done filter, status/effort/search filters
 - JSON import / export with a 24-hour backup-nag banner
 - REST API so external tools can read and mutate state
@@ -27,7 +28,7 @@ State lives in a Docker named volume (`todo_data`) — survives container restar
 | What changed | What to run |
 |---|---|
 | Backend (`server/*`) | `docker compose up -d --build` |
-| Frontend (`index.html`, `app.js`, `style.css`) | `docker compose up -d --build` (frontend is baked into the image) |
+| Frontend (`index.html`, `app.js`, `weekly.js`, `style.css`) | `docker compose up -d --build` (frontend is baked into the image) |
 | Nothing, just restart | `docker compose restart` |
 
 ### Backups
@@ -43,11 +44,12 @@ State lives in a Docker named volume (`todo_data`) — survives container restar
 
 ## Tech Stack
 
-- **Frontend** — vanilla HTML/CSS/JS, no build step, single `index.html`/`app.js`/`style.css`
+- **Frontend** — vanilla HTML/CSS/JS, no build step: `index.html` / `app.js` (todo table) / `weekly.js` (weekly update tab) / `style.css`
+- **Vendored** — `vendor/marked.min.js` for markdown rendering, deliberately not CDN-loaded so the app works offline
 - **Backend** — Node 20 + Express + better-sqlite3, single `server.js`
 - **Storage** — SQLite inside the `todo_data` named Docker volume
 - **Transport** — same-origin REST under `/api/*`, served by the same Node process as the static frontend
-- **Hardening** — container runs as non-root `node` user; only the 3 frontend files (`index.html`, `app.js`, `style.css`) are served — backend source, DB, and `.git` are not exposed
+- **Hardening** — container runs as non-root `node` user; only the explicitly allowlisted frontend files are served — backend source, DB, and `.git` are not exposed
 
 ## API
 
@@ -68,7 +70,14 @@ Bound to `127.0.0.1:8084` only — no auth, not exposed beyond localhost.
 | `POST` | `/api/todos/reorder` | Bulk priority assignment (drag-to-reorder) |
 | `POST` | `/api/todos/cleanup` | Remove Done items older than last working day |
 | `GET` | `/api/projects/resolve?q=...` | Resolve project by id or fuzzy name |
-| `GET` | `/api/export` | Same payload as `/api/state` (for download) |
+| `GET` | `/api/projects/:id/weekly` | Current weekly-update draft |
+| `PUT` | `/api/projects/:id/weekly` | Replace the draft |
+| `POST` | `/api/projects/:id/weekly/append` | Append a bullet under a section (`notable` / `client` / `us`) |
+| `POST` | `/api/projects/:id/weekly/archive` | Archive the draft and reseed |
+| `GET` | `/api/projects/:id/weekly/archive` | List archived drafts |
+| `GET` | `/api/projects/:id/weekly/archive/:archiveId` | Read one archived draft |
+| `DELETE` | `/api/projects/:id/weekly/archive/:archiveId` | Delete one archived draft |
+| `GET` | `/api/export` | `/api/state` plus weekly drafts and their archive (for download) |
 | `POST` | `/api/import` | Replace state with uploaded JSON |
 | `POST` | `/api/meta/last-backup` | Update `lastBackup` timestamp |
 
@@ -85,7 +94,12 @@ The frontend is a normal web page, so you can use any OS tool to pin it on top o
 ToDo/
 ├── index.html          # baked into the Docker image at build time
 ├── app.js              # vanilla JS UI; StorageService talks to /api
+├── weekly.js           # weekly-update tab: editor, preview, Outlook copy
 ├── style.css
+├── vendor/
+│   └── marked.min.js   # vendored so the app renders markdown offline
+├── docs/
+│   └── weekly-update.md
 ├── server/
 │   ├── server.js       # Express app — /api routes + 3 explicit frontend routes
 │   ├── db.js           # SQLite schema + all write logic (recurring, priority shift, cleanup)
@@ -98,3 +112,4 @@ ToDo/
 
 - All write logic that has to stay consistent across clients (recurring spawn, priority shift on Done, cleanup cutoff) lives in `server/db.js`. The browser no longer recomputes any of it.
 - The browser polls `GET /api/state` every 10 seconds (paused when the tab is hidden) so changes made via the API show up automatically.
+- Weekly-update drafts are **not** in `/api/state`. They have their own endpoints and are loaded only when the Weekly update tab is opened, so the poll stays cheap and an open editor is never overwritten by a background refresh.

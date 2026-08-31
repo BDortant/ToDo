@@ -55,6 +55,16 @@
             </div>
         </div>
 
+        <!-- Per-project tabs. Hidden unless a real project is selected —
+             "All items", "By project" and "No Project" have no weekly
+             update, because the client mail is always per project. -->
+        <div class="project-tabs" id="project-tabs" role="tablist" aria-label="Project tabs" hidden>
+            <button type="button" class="project-tab active" data-tab="list" role="tab" aria-selected="true"
+                    onclick="App.setProjectTab('list')">List</button>
+            <button type="button" class="project-tab" data-tab="weekly" role="tab" aria-selected="false"
+                    onclick="App.setProjectTab('weekly')">Weekly update</button>
+        </div>
+
         <!-- Per-column Status / Effort filters now live in the table header
              popovers (built by app.js), so the top filter bar carries only
              the controls that aren't expressible per-column:
@@ -200,6 +210,29 @@
     </div>
 </div>
 
+<!-- Archived weekly update (read-only) -->
+<div class="modal-backdrop" id="weekly-archive-modal">
+    <div class="modal modal-wide">
+        <h3 id="weekly-archive-title">Archived update</h3>
+        <div class="weekly-archive-body">
+            <div id="weekly-archive-preview" class="weekly-preview"></div>
+            <details>
+                <summary>Markdown source</summary>
+                <textarea id="weekly-archive-source" class="weekly-editor" readonly></textarea>
+            </details>
+        </div>
+        <div class="form-actions">
+            <button type="button" class="btn btn-outline btn-small" id="weekly-archive-delete"
+                    onclick="Weekly.deleteArchive(this)" title="Delete this archived version">🗑️ Delete</button>
+            <button type="button" class="btn btn-secondary" onclick="Weekly.closeArchive()">Close</button>
+        </div>
+    </div>
+</div>
+
+<!-- marked is vendored, not CDN-loaded: this app has to work offline. -->
+<script src="vendor/marked.min.js"></script>
+<script>marked.setOptions({ breaks: true });</script>
+<script src="weekly.js"></script>
 <script src="app.js"></script>
 
 </body>

@@ -17,6 +17,10 @@ import {
     replaceState, setLastBackup,
     normalizePriorities,
     resolveProject,
+    getExportState,
+    getWeeklyDraft, saveWeeklyDraft, appendWeeklyBullet,
+    archiveWeeklyDraft, listWeeklyArchive, getWeeklyArchiveEntry,
+    deleteWeeklyArchiveEntry,
     HttpError
 } from './db.js';
 
@@ -100,6 +104,25 @@ app.post('/api/todos/:id/priority', wrap((req) => {
 app.post('/api/todos/:id/snooze', wrap((req) => snoozeTodo(req.params.id, req.body?.until)));
 app.post('/api/todos/:id/unsnooze', wrap((req) => unsnoozeTodo(req.params.id)));
 
+// Weekly update drafts — one markdown document per project, built up over
+// the week and copied into Outlook. Deliberately its own endpoint family
+// rather than a field on /api/state (see docs/weekly-update.md).
+app.get('/api/projects/:id/weekly', wrap((req) => getWeeklyDraft(req.params.id)));
+app.put('/api/projects/:id/weekly', wrap((req) => saveWeeklyDraft(req.params.id, req.body?.markdown)));
+app.post('/api/projects/:id/weekly/append', wrap((req) =>
+    appendWeeklyBullet(req.params.id, req.body?.section, req.body?.text)
+));
+app.post('/api/projects/:id/weekly/archive', wrap((req) =>
+    archiveWeeklyDraft(req.params.id, req.body?.markdown)
+));
+app.get('/api/projects/:id/weekly/archive', wrap((req) => listWeeklyArchive(req.params.id)));
+app.get('/api/projects/:id/weekly/archive/:archiveId', wrap((req) =>
+    getWeeklyArchiveEntry(req.params.id, req.params.archiveId)
+));
+app.delete('/api/projects/:id/weekly/archive/:archiveId', wrap((req) =>
+    deleteWeeklyArchiveEntry(req.params.id, req.params.archiveId)
+));
+
 // Project resolver (chat tool sugar)
 app.get('/api/projects/resolve', wrap((req) => {
     const p = resolveProject(req.query.q);
@@ -109,7 +132,7 @@ app.get('/api/projects/resolve', wrap((req) => {
 
 // Import / export
 app.get('/api/export', (_req, res) => {
-    res.json(getState());
+    res.json(getExportState());
 });
 
 app.post('/api/import', wrap((req) => replaceState(req.body)));
@@ -140,7 +163,12 @@ const FRONTEND_FILES = {
     '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
     '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
     '/app.js': { file: 'app.js', type: 'application/javascript; charset=utf-8' },
-    '/style.css': { file: 'style.css', type: 'text/css; charset=utf-8' }
+    '/weekly.js': { file: 'weekly.js', type: 'application/javascript; charset=utf-8' },
+    '/style.css': { file: 'style.css', type: 'text/css; charset=utf-8' },
+    // Vendored rather than loaded from a CDN: this app runs on localhost and
+    // has to keep working without internet. Same version the zp-md-panel tool
+    // uses, so the Outlook preview renders identically.
+    '/vendor/marked.min.js': { file: 'vendor/marked.min.js', type: 'application/javascript; charset=utf-8' }
 };
 
 for (const [route, { file, type }] of Object.entries(FRONTEND_FILES)) {

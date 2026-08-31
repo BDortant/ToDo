@@ -104,6 +104,11 @@ const App = (() => {
 
     let currentView = 'all';           // 'all' or 'by-project'
     let selectedProjectId = null;      // filter in sidebar
+    // Which tab is open when a real project is selected: the todo table, or
+    // that project's weekly-update draft. Only meaningful for a real project
+    // — "All items", "By project" and the "No Project" sentinel have no
+    // weekly update, because the mail is always per client.
+    let projectTab = 'list';           // 'list' or 'weekly'
     let editingTodoTags = [];          // temp tags for the form
     let draggedRowId = null;           // drag-to-reorder
     // Edge auto-scroll while dragging a row: the browser doesn't scroll an
@@ -139,7 +144,13 @@ const App = (() => {
     // no item currently carries them. 'snoozed' is a virtual filter that
     // matches items with snoozeUntil in the future (driven by the backend
     // snooze_until column, not a real tag).
-    const RESERVED_FILTER_TAGS = ['delegatable', 'watching', 'snoozed'];
+    // 'weekly' and the wu:* overrides drive the weekly-update suggestions
+    // (see docs/weekly-update.md), so they're always offered in the filter
+    // even before anything carries them.
+    const RESERVED_FILTER_TAGS = [
+        'delegatable', 'watching', 'snoozed',
+        'weekly', 'wu:notable', 'wu:client', 'wu:us', 'wu:skip'
+    ];
 
     // Virtual tag-filter entry that controls items with NO tags. Shown in the
     // dropdown as "(no tags)"; unticking it hides untagged items. It's a sentinel
@@ -231,6 +242,8 @@ docker compose up -d</pre>
     // tick (10s later) will pick up server changes naturally.
     function isUserBusy() {
         if (draggedRowId) return true;
+        // Mid-edit in the weekly draft, or a save still in flight.
+        if (projectTab === 'weekly' && Weekly.isBusy()) return true;
         const ae = document.activeElement;
         if (!ae) return false;
         if (ae.tagName === 'TEXTAREA') return true;
@@ -768,6 +781,25 @@ docker compose up -d</pre>
         // Main content
         const container = document.getElementById('main-content');
 
+        // Project tabs are only shown for a real project. Outside that the
+        // weekly editor is unmounted (which flushes any pending save) and the
+        // filter bar comes back — it means nothing on a markdown document.
+        const onRealProject = currentView === 'all' && selectedProjectId && selectedProjectId !== NO_PROJECT_ID;
+        if (!onRealProject && projectTab === 'weekly') {
+            projectTab = 'list';
+            Weekly.unmount();
+        }
+        const tabsEl = document.getElementById('project-tabs');
+        tabsEl.hidden = !onRealProject;
+        // Synced even while hidden, so the bar is already correct the moment
+        // it reappears rather than briefly showing the previous tab.
+        tabsEl.querySelectorAll('.project-tab').forEach(btn => {
+            const isActive = btn.dataset.tab === projectTab;
+            btn.classList.toggle('active', isActive);
+            btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+        });
+        document.querySelector('.filters-bar').hidden = onRealProject && projectTab === 'weekly';
+
         if (currentView === 'all') {
             if (selectedProjectId === NO_PROJECT_ID) {
                 titleEl.textContent = 'No Project';
@@ -775,8 +807,21 @@ docker compose up -d</pre>
                 container.innerHTML = buildTable(todos, false, 'overall');
             } else if (selectedProjectId) {
                 titleEl.textContent = getProjectName(selectedProjectId);
-                const todos = getFilteredTodos(selectedProjectId);
-                container.innerHTML = buildTable(todos, false, 'project');
+                if (projectTab === 'weekly') {
+                    // The weekly editor owns #main-content while it is open.
+                    // Re-mounting on every render (including the 10s poll)
+                    // would throw away the textarea and its cursor, so an
+                    // already-mounted editor is left alone and only its
+                    // todo-derived suggestions are refreshed.
+                    if (Weekly.isMounted(selectedProjectId)) {
+                        Weekly.refresh();
+                    } else {
+                        Weekly.mount(selectedProjectId, getProjectName(selectedProjectId), container);
+                    }
+                } else {
+                    const todos = getFilteredTodos(selectedProjectId);
+                    container.innerHTML = buildTable(todos, false, 'project');
+                }
             } else {
                 titleEl.textContent = 'All items';
                 const todos = getFilteredTodos(null);
@@ -840,6 +885,16 @@ docker compose up -d</pre>
     function selectProject(id) {
         currentView = 'all';
         selectedProjectId = selectedProjectId === id ? null : id;
+        render();
+    }
+
+    // The tab choice deliberately survives switching projects: comparing this
+    // week's draft across two clients is a normal thing to do, and being
+    // bounced back to the table each time would fight that.
+    function setProjectTab(tab) {
+        if (projectTab === tab) return;
+        if (projectTab === 'weekly') Weekly.unmount();
+        projectTab = tab;
         render();
     }
 
@@ -1473,6 +1528,12 @@ docker compose up -d</pre>
         render,
         setView,
         selectProject,
+        setProjectTab,
+        // Read access for the Weekly module, which derives its suggestions
+        // from the same snapshot the table renders from.
+        getTodos: () => data.todos,
+        escapeHTML,
+        escapeAttr,
         openProjectModal,
         closeProjectModal,
         saveProject,

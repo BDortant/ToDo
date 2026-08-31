@@ -15,8 +15,9 @@ RUN npm install --omit=dev && npm cache clean --force
 COPY server/server.js server/db.js ./
 
 # Frontend files baked in. Edit the repo's index.html / app.js /
-# style.css then rebuild with `docker compose up -d --build`.
-COPY index.html app.js style.css /app/public/
+# weekly.js / style.css then rebuild with `docker compose up -d --build`.
+COPY index.html app.js weekly.js style.css /app/public/
+COPY vendor/marked.min.js /app/public/vendor/
 
 # Hand everything to the bundled non-root `node` user (uid 1000)
 # so a process escape doesn't get root over the data volume.

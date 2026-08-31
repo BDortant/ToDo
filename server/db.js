@@ -80,8 +80,31 @@ export function initDb(dataDir) {
             value TEXT
         );
 
+        -- One weekly-update draft per project, built up during the week and
+        -- sent as the body of the Dutch client mail. Kept out of /api/state
+        -- on purpose: the table view never reads it, and nine mail bodies on
+        -- every 10s poll is a lot of payload for nothing.
+        CREATE TABLE IF NOT EXISTS project_weekly (
+            project_id   TEXT PRIMARY KEY,
+            markdown     TEXT NOT NULL DEFAULT '',
+            updated_date TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+
+        -- Previous weeks, so "cross-reference last week's update" is a lookup
+        -- rather than a memory exercise. Read-only once written.
+        CREATE TABLE IF NOT EXISTS project_weekly_archive (
+            id            TEXT PRIMARY KEY,
+            project_id    TEXT NOT NULL,
+            markdown      TEXT NOT NULL,
+            archived_date TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+
         CREATE INDEX IF NOT EXISTS idx_todos_project ON todos(project_id);
         CREATE INDEX IF NOT EXISTS idx_todos_status ON todos(status);
+        CREATE INDEX IF NOT EXISTS idx_weekly_archive_project
+            ON project_weekly_archive(project_id, archived_date DESC);
     `);
 
     // Additive migrations — safe to re-run, only add column if missing.
@@ -170,6 +193,18 @@ export function getState() {
         projects: listProjects(),
         todos: listTodos(),
         lastBackup: lastBackupRow ? lastBackupRow.value : null
+    };
+}
+
+// Export carries everything getState does plus the weekly-update drafts and
+// their archive. Those are excluded from getState because the 10s poll would
+// pay for them on every tick, but a backup that silently dropped a week of
+// drafted client mail would be a bad backup.
+export function getExportState() {
+    return {
+        ...getState(),
+        weeklyDrafts: listWeeklyDrafts(),
+        weeklyArchive: listWeeklyArchiveAll()
     };
 }
 
@@ -659,6 +694,26 @@ export function replaceState(state) {
                 recurringDays: normalizeDays(t.recurringDays)
             });
         }
+        // Weekly drafts + archive. The DELETE above cascades these away, so
+        // they have to be restored here or an import would silently drop
+        // them. Rows whose project didn't survive the import are skipped —
+        // the FK would reject them anyway.
+        const projectIds = new Set(listProjects().map(p => p.id));
+        const insDraft = db.prepare(
+            'INSERT OR REPLACE INTO project_weekly (project_id, markdown, updated_date) VALUES (?, ?, ?)'
+        );
+        for (const d of Array.isArray(state.weeklyDrafts) ? state.weeklyDrafts : []) {
+            if (!d || !projectIds.has(d.projectId)) continue;
+            insDraft.run(d.projectId, String(d.markdown ?? ''), d.updatedDate || new Date().toISOString());
+        }
+        const insArchive = db.prepare(
+            'INSERT OR REPLACE INTO project_weekly_archive (id, project_id, markdown, archived_date) VALUES (?, ?, ?, ?)'
+        );
+        for (const a of Array.isArray(state.weeklyArchive) ? state.weeklyArchive : []) {
+            if (!a || !a.id || !projectIds.has(a.projectId)) continue;
+            insArchive.run(a.id, a.projectId, String(a.markdown ?? ''), a.archivedDate || new Date().toISOString());
+        }
+
         if (state.lastBackup) {
             db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('last_backup', ?)").run(state.lastBackup);
         }
@@ -675,6 +730,161 @@ export function replaceState(state) {
 
 export function setLastBackup(iso) {
     db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('last_backup', ?)").run(iso);
+}
+
+// --- Weekly update drafts ---------------------------------------
+
+// Which `## ` heading each append section targets. Matched loosely on the
+// first distinctive word so a hand-edited heading ("## Geplande acties vanuit
+// ons") still resolves; the mail template is a starting point, not a schema.
+const WEEKLY_SECTIONS = {
+    notable: { test: /^##\s+Noemenswaardige/i, heading: '## Noemenswaardige (recente) ontwikkelingen' },
+    client: { test: /^##\s+Benodigde acties/i, heading: '## Benodigde acties vanuit jullie (klant)' },
+    us: { test: /^##\s+Geplande acties/i, heading: '## Geplande acties vanuit ons (ZeroPlex)' }
+};
+
+function requireProject(projectId) {
+    const project = getProject(projectId);
+    if (!project) throw new HttpError(404, 'Project not found');
+    return project;
+}
+
+export function getWeeklyDraft(projectId) {
+    requireProject(projectId);
+    const row = db.prepare('SELECT * FROM project_weekly WHERE project_id = ?').get(projectId);
+    return {
+        projectId,
+        markdown: row ? row.markdown : '',
+        updatedDate: row ? row.updated_date : null
+    };
+}
+
+export function saveWeeklyDraft(projectId, markdown) {
+    requireProject(projectId);
+    if (typeof markdown !== 'string') throw new HttpError(400, 'markdown must be a string');
+    const now = new Date().toISOString();
+    db.prepare(`
+        INSERT INTO project_weekly (project_id, markdown, updated_date) VALUES (?, ?, ?)
+        ON CONFLICT(project_id) DO UPDATE SET markdown = excluded.markdown, updated_date = excluded.updated_date
+    `).run(projectId, markdown, now);
+    return getWeeklyDraft(projectId);
+}
+
+// Append one bullet to the end of a section. This is the write path the CLI
+// uses during the week, so it must never require the caller to hold (or
+// rewrite) the whole document.
+export function appendWeeklyBullet(projectId, section, text) {
+    requireProject(projectId);
+    const spec = WEEKLY_SECTIONS[section];
+    if (!spec) {
+        throw new HttpError(400, `Unknown section '${section}'. Use one of: ${Object.keys(WEEKLY_SECTIONS).join(', ')}`);
+    }
+    const bulletText = String(text ?? '').trim();
+    if (!bulletText) throw new HttpError(400, 'text is required');
+    const bullet = bulletText.startsWith('- ') ? bulletText : `- ${bulletText}`;
+
+    const current = getWeeklyDraft(projectId).markdown;
+    const lines = current ? current.split('\n') : [];
+
+    const headingIdx = lines.findIndex(l => spec.test.test(l));
+    if (headingIdx === -1) {
+        // No such heading yet. Insert a fresh section above the signature
+        // rather than at the very end, so bullets never land below it.
+        const sigIdx = lines.findIndex(l => /^Met vriendelijke groet,/i.test(l));
+        const block = ['', spec.heading, '', bullet, ''];
+        if (sigIdx === -1) {
+            return saveWeeklyDraft(projectId, [...lines, ...block].join('\n').replace(/^\n+/, ''));
+        }
+        lines.splice(sigIdx, 0, ...block);
+        return saveWeeklyDraft(projectId, lines.join('\n'));
+    }
+
+    // End of this section = the line before the next `## ` heading, with any
+    // trailing blank lines inside the block skipped back over.
+    let end = headingIdx + 1;
+    while (end < lines.length && !/^##\s/.test(lines[end])) end++;
+    let insertAt = end;
+    while (insertAt > headingIdx + 1 && lines[insertAt - 1].trim() === '') insertAt--;
+
+    // First bullet in an empty section keeps the blank line under the heading.
+    if (insertAt === headingIdx + 1) lines.splice(insertAt, 0, '', bullet);
+    else lines.splice(insertAt, 0, bullet);
+    return saveWeeklyDraft(projectId, lines.join('\n'));
+}
+
+export function archiveWeeklyDraft(projectId, replacement) {
+    requireProject(projectId);
+    const current = getWeeklyDraft(projectId);
+    if (!current.markdown.trim()) throw new HttpError(400, 'Draft is empty, nothing to archive');
+
+    const id = generateId();
+    const now = new Date().toISOString();
+    const tx = db.transaction(() => {
+        db.prepare(
+            'INSERT INTO project_weekly_archive (id, project_id, markdown, archived_date) VALUES (?, ?, ?, ?)'
+        ).run(id, projectId, current.markdown, now);
+        saveWeeklyDraft(projectId, typeof replacement === 'string' ? replacement : '');
+    });
+    tx();
+
+    return { archived: { id, projectId, archivedDate: now }, draft: getWeeklyDraft(projectId) };
+}
+
+// Bodies are omitted here on purpose — the History dropdown only needs dates
+// until you actually open one.
+export function listWeeklyArchive(projectId) {
+    requireProject(projectId);
+    return db.prepare(`
+        SELECT id, project_id, archived_date, LENGTH(markdown) AS size
+        FROM project_weekly_archive WHERE project_id = ? ORDER BY archived_date DESC
+    `).all(projectId).map(r => ({
+        id: r.id,
+        projectId: r.project_id,
+        archivedDate: r.archived_date,
+        size: r.size
+    }));
+}
+
+export function getWeeklyArchiveEntry(projectId, archiveId) {
+    requireProject(projectId);
+    const row = db.prepare(
+        'SELECT * FROM project_weekly_archive WHERE id = ? AND project_id = ?'
+    ).get(archiveId, projectId);
+    if (!row) throw new HttpError(404, 'Archived draft not found');
+    return {
+        id: row.id,
+        projectId: row.project_id,
+        markdown: row.markdown,
+        archivedDate: row.archived_date
+    };
+}
+
+// Archiving is the only one-way action in the tab, so there has to be a way
+// back out of a mistaken one.
+export function deleteWeeklyArchiveEntry(projectId, archiveId) {
+    requireProject(projectId);
+    const res = db.prepare(
+        'DELETE FROM project_weekly_archive WHERE id = ? AND project_id = ?'
+    ).run(archiveId, projectId);
+    if (res.changes === 0) throw new HttpError(404, 'Archived draft not found');
+    return { ok: true, id: archiveId };
+}
+
+function listWeeklyDrafts() {
+    return db.prepare("SELECT * FROM project_weekly WHERE markdown != ''").all().map(r => ({
+        projectId: r.project_id,
+        markdown: r.markdown,
+        updatedDate: r.updated_date
+    }));
+}
+
+function listWeeklyArchiveAll() {
+    return db.prepare('SELECT * FROM project_weekly_archive ORDER BY archived_date').all().map(r => ({
+        id: r.id,
+        projectId: r.project_id,
+        markdown: r.markdown,
+        archivedDate: r.archived_date
+    }));
 }
 
 // --- Internal helpers -------------------------------------------
