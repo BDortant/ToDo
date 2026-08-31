@@ -763,6 +763,12 @@ body {
    Weekly update tab
    ============================================================= */
 
+/* An element with the `hidden` attribute must actually disappear. Several
+   layout rules below set `display: flex` on a class, which outranks the
+   browser's built-in `[hidden] { display: none }` and would leave a "hidden"
+   element on screen. This puts that back. */
+[hidden] { display: none !important; }
+
 .project-tabs {
     display: flex;
     gap: 4px;

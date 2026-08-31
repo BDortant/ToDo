@@ -659,6 +659,20 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
         renderMeta();
     }
 
+    // Fill only the literal placeholder tokens from the stored mail details.
+    // Safe to run unprompted on every open: a placeholder is by definition
+    // text nobody has written yet, so nothing you typed can be lost. Covers
+    // drafts that were started before their mail details existed.
+    function fillPlaceholders() {
+        let out = markdown;
+        if (meta.recipientsTo) out = out.replace('**To:** {vul de ontvanger(s) in}', `**To:** ${meta.recipientsTo}`);
+        if (meta.recipientsCc) out = out.replace('**Cc:** {vul in of verwijder}', `**Cc:** ${meta.recipientsCc}`);
+        if (meta.greeting) out = out.replace('Hoi {voornaam},', `Hoi ${meta.greeting},`);
+        if (out === markdown) return false;
+        markdown = out;
+        return true;
+    }
+
     // Rewrite the header lines and the greeting of the CURRENT draft from the
     // stored mail details. Only those four lines are touched.
     function applyMeta() {
@@ -791,8 +805,13 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
             archive = list || [];
             saveState = 'idle';
             savedAt = draft.updatedDate ? new Date(draft.updatedDate) : null;
+            // An existing draft may predate its mail details, or have been
+            // seeded before they were filled in. Placeholders still standing
+            // get resolved now rather than waiting for a manual Apply.
+            const filled = !isFirstOpen && fillPlaceholders();
             renderAll();
-            if (isFirstOpen) scheduleSave();
+            if (isFirstOpen || filled) scheduleSave();
+            if (filled) flashToolbar('Mail details filled in');
         } catch (e) {
             loadError = e;
             container.innerHTML = `<div class="load-error">

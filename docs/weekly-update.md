@@ -109,7 +109,11 @@ recipients:
 | `Name in subject` | the subject, when the client's mail name differs from the project name |
 
 These live outside the markdown, so they survive an archive and pre-fill the
-next template. Editing them does **not** rewrite the draft you already have,
+next template. Opening a draft that still carries the raw placeholders
+(`{vul de ontvanger(s) in}`, `Hoi {voornaam},`) resolves them from the mail
+details on the spot, which covers drafts started before their details existed.
+That is safe to do unprompted because a placeholder is by definition text
+nobody has written yet. Editing them does **not** rewrite the draft you already have,
 because silently rewriting text you typed is worse than an extra click:
 **Apply to draft** does that explicitly, touching only the To / Cc / Subject
 lines and the greeting.
@@ -215,6 +219,19 @@ todo --action=weekly-archive --project=Hendrix         # archive + reseed templa
 `weekly-append` is the one that matters for day-to-day use: it is a single
 low-token call that adds one bullet to the right section without reading or
 rewriting the whole document.
+
+## A note on hiding elements
+
+The tab bar and the filter bar are shown and hidden with the `hidden`
+attribute. Any author rule that sets `display` on those elements via a class
+outranks the browser's built-in `[hidden] { display: none }`, which silently
+turns `el.hidden = true` into a no-op. That is exactly what happened when both
+were given `display: flex`. `style.css` therefore carries a
+`[hidden] { display: none !important; }` guard. Do not remove it.
+
+jsdom cannot catch this class of bug: it applies its own `[hidden]` rule above
+author class rules, so a computed-style assertion passes whether or not the
+guard exists. The guard is covered by a static stylesheet check instead.
 
 ## Client-portal access (why the template says what it says)
 
