@@ -1532,6 +1532,14 @@ docker compose up -d</pre>
         // Read access for the Weekly module, which derives its suggestions
         // from the same snapshot the table renders from.
         getTodos: () => data.todos,
+        // Tag writes for the Weekly module's "not for the weekly update"
+        // control. Goes through the same reload+render path as any other
+        // mutation so both views stay consistent.
+        setTodoTags: async (id, tags) => {
+            await StorageService.patchTodo(id, { tags });
+            await reloadState();
+            render();
+        },
         escapeHTML,
         escapeAttr,
         openProjectModal,

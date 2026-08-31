@@ -1033,3 +1033,67 @@ body {
     border-radius: 8px;
     background: #fafbfc;
 }
+
+/* --- Mail details panel --- */
+
+.weekly-meta-body {
+    padding: 4px 12px 12px;
+    border-top: 1px solid #eef0f3;
+}
+
+.weekly-meta-field {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+    font-size: 13px;
+}
+
+.weekly-meta-field > span {
+    width: 130px;
+    flex-shrink: 0;
+    color: #666;
+}
+
+.weekly-meta-field input {
+    flex: 1;
+    padding: 5px 9px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 13px;
+}
+
+.weekly-meta-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+    padding-left: 140px;
+}
+
+.weekly-meta-hint { font-size: 12px; color: #999; }
+
+/* Suggestion row: ✓ doubles as "take it back out", ✕ drops the tags. */
+.weekly-suggest-add.remove {
+    color: #2e7d32;
+    border-color: #cfe3d4;
+    background: #f2f9f4;
+}
+
+.weekly-suggest-add.remove:hover {
+    background: #fdecea;
+    border-color: #f2c6c2;
+    color: #c62828;
+}
+
+.weekly-suggest-untag {
+    background: none;
+    border: none;
+    color: #ccc;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0 2px;
+    flex-shrink: 0;
+}
+
+.weekly-suggest-untag:hover { color: #c62828; }

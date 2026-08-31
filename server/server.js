@@ -18,6 +18,7 @@ import {
     normalizePriorities,
     resolveProject,
     getExportState,
+    getProjectMeta, saveProjectMeta,
     getWeeklyDraft, saveWeeklyDraft, appendWeeklyBullet,
     archiveWeeklyDraft, listWeeklyArchive, getWeeklyArchiveEntry,
     deleteWeeklyArchiveEntry,
@@ -107,6 +108,11 @@ app.post('/api/todos/:id/unsnooze', wrap((req) => unsnoozeTodo(req.params.id)));
 // Weekly update drafts — one markdown document per project, built up over
 // the week and copied into Outlook. Deliberately its own endpoint family
 // rather than a field on /api/state (see docs/weekly-update.md).
+// Per-project mail details (To / Cc / greeting / client name) used to
+// pre-fill the weekly template.
+app.get('/api/projects/:id/meta', wrap((req) => getProjectMeta(req.params.id)));
+app.put('/api/projects/:id/meta', wrap((req) => saveProjectMeta(req.params.id, req.body || {})));
+
 app.get('/api/projects/:id/weekly', wrap((req) => getWeeklyDraft(req.params.id)));
 app.put('/api/projects/:id/weekly', wrap((req) => saveWeeklyDraft(req.params.id, req.body?.markdown)));
 app.post('/api/projects/:id/weekly/append', wrap((req) =>

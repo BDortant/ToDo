@@ -29,6 +29,8 @@ const Weekly = (() => {
     let saveState = 'idle';          // 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
     let savedAt = null;
     let archive = [];
+    let meta = { recipientsTo: '', recipientsCc: '', greeting: '', clientName: '' };
+    let metaOpen = false;
     let loadError = null;
 
     // --- Section model -------------------------------------------
@@ -71,15 +73,22 @@ const Weekly = (() => {
     // (phase-c-email-layout.md). Duplicated rather than imported: the app
     // cannot read ~/.claude/skills. If the skill's layout changes, change
     // this with it.
+    // Pre-filled from the project's stored mail details where they exist, so
+    // a new week starts with the recipients and greeting already right. Any
+    // field left blank falls back to a visible placeholder.
     function buildTemplate(name) {
         const week = isoWeek(new Date());
-        return `**To:** {vul de ontvanger(s) in}
-**Cc:** {vul in of verwijder}
-**Subject:** ZeroPlex - periodieke update ${name} - week ${week}
+        const to = meta.recipientsTo || '{vul de ontvanger(s) in}';
+        const cc = meta.recipientsCc || '{vul in of verwijder}';
+        const subjectName = meta.clientName || name;
+        const greeting = meta.greeting || '{voornaam}';
+        return `**To:** ${to}
+**Cc:** ${cc}
+**Subject:** ZeroPlex - periodieke update ${subjectName} - week ${week}
 
 ---
 
-Hoi {voornaam},
+Hoi ${greeting},
 
 
 Hierbij onze periodieke update, mochten er vragen zijn dan reageer gerust!
@@ -95,7 +104,7 @@ Dit segment bevat alleen de belangrijkste zaken die we extra onder aandacht will
 
 Voor een volledig overzicht bekijk a.u.b. het 'Overzicht Actieve Deliverables' onderin deze e-mail of login op ons klantenportaal voor software (Alex).
 
-Heeft u nog geen toegang tot ons klantenportaal maar wilt u dit wel, stuur dan een e-mail naar bram.dortant@zeroplex.nl
+Heeft u nog geen toegang tot ons klantenportaal maar wilt u dit wel, stuur dan een e-mail naar support@zeroplex.nl, dan zetten wij het account voor u klaar.
 
 
 ## Noemenswaardige (recente) ontwikkelingen
@@ -155,6 +164,8 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
 
     const api = {
         get: (pid) => call('GET', `/api/projects/${encodeURIComponent(pid)}/weekly`),
+        getMeta: (pid) => call('GET', `/api/projects/${encodeURIComponent(pid)}/meta`),
+        putMeta: (pid, patch) => call('PUT', `/api/projects/${encodeURIComponent(pid)}/meta`, patch),
         put: (pid, md) => call('PUT', `/api/projects/${encodeURIComponent(pid)}/weekly`, { markdown: md }),
         archive: (pid, md) => call('POST', `/api/projects/${encodeURIComponent(pid)}/weekly/archive`, { markdown: md }),
         listArchive: (pid) => call('GET', `/api/projects/${encodeURIComponent(pid)}/weekly/archive`),
@@ -450,6 +461,37 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
         renderSuggestions();
     }
 
+    // Take a todo's bullet back out of the draft. Matches the same way
+    // isMentioned() decides a todo is in there, so what the ✓ claims and what
+    // this removes can never drift apart.
+    function removeBullet(todo) {
+        const idMatch = String(todo.title).match(/\bD\d{3,6}\b/i);
+        const norm = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        const needle = norm(todo.title);
+
+        const matches = (line) => {
+            if (!/^\s*[-*]\s+/.test(line)) return false;          // bullets only
+            if (idMatch) return new RegExp(`\\b${idMatch[0]}\\b`, 'i').test(line);
+            return needle.length > 0 && norm(line).includes(needle);
+        };
+
+        const kept = markdown.split('\n').filter(l => !matches(l));
+        const removed = markdown.split('\n').length - kept.length;
+        if (removed === 0) {
+            // Mentioned, but not as a bullet — it was written into prose, so
+            // there is no safe automatic edit. Say so instead of guessing.
+            flashToolbar('Mentioned in prose, not as a bullet — remove it by hand');
+            return;
+        }
+        markdown = kept.join('\n');
+        const ta = document.getElementById('weekly-editor');
+        if (ta) ta.value = markdown;
+        scheduleSave();
+        renderPreview();
+        renderSuggestions();
+        flashToolbar(removed === 1 ? 'Bullet removed' : `${removed} bullets removed`);
+    }
+
     // --- Saving ---------------------------------------------------
 
     function scheduleSave() {
@@ -542,12 +584,17 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
             const rows = g.items.map(i => `
                 <li class="${i.mentioned ? 'mentioned' : ''}">
                     ${i.mentioned
-                        ? '<span class="weekly-suggest-flag ok" title="Already mentioned in the draft">✓</span>'
+                        ? `<button type="button" class="weekly-suggest-add remove" data-id="${App.escapeAttr(i.id)}"
+                                   title="In the draft. Click to take the bullet back out."
+                                   onclick="Weekly.removeSuggestion(this.dataset.id)">✓</button>`
                         : `<button type="button" class="weekly-suggest-add" title="Insert as a bullet under this section"
                                    data-section="${g.key}" data-id="${App.escapeAttr(i.id)}"
                                    onclick="Weekly.insertSuggestion(this.dataset.section, this.dataset.id)">＋</button>`}
                     <span class="weekly-suggest-title">${App.escapeHTML(i.title)}</span>
                     <span class="weekly-suggest-status">${App.escapeHTML(i.status)}</span>
+                    <button type="button" class="weekly-suggest-untag" data-id="${App.escapeAttr(i.id)}"
+                            title="Not for the weekly update: removes the weekly / wu:* tags from this todo"
+                            onclick="Weekly.untagSuggestion(this.dataset.id)">✕</button>
                 </li>`).join('');
             return `<div class="weekly-suggest-group">
                 <h4>${App.escapeHTML(g.label)}</h4>
@@ -556,6 +603,96 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
         }).join('');
 
         el.innerHTML = head + `<div class="weekly-suggest-body">${body}</div>`;
+    }
+
+    // Mail details live outside the markdown so they survive an archive and
+    // can pre-fill next week's template. Editing them does not rewrite the
+    // current draft on its own — "Apply to draft" does that explicitly,
+    // because silently rewriting text you typed would be worse.
+    function renderMeta() {
+        const el = document.getElementById('weekly-meta');
+        if (!el) return;
+        const filled = [meta.recipientsTo, meta.greeting].filter(Boolean).length;
+        const head = `
+            <button type="button" class="weekly-suggest-toggle" onclick="Weekly.toggleMeta()">
+                <span class="caret">${metaOpen ? '▾' : '▸'}</span>
+                Mail details
+                <span class="weekly-suggest-count ${filled === 2 ? 'ok' : 'warn'}">
+                    ${meta.recipientsTo ? App.escapeHTML(meta.recipientsTo.split(',')[0].trim()) + (meta.recipientsTo.includes(',') ? ' +' : '') : 'no recipients set'}
+                </span>
+            </button>`;
+        if (!metaOpen) { el.innerHTML = head; return; }
+        const field = (key, label, placeholder) => `
+            <label class="weekly-meta-field">
+                <span>${label}</span>
+                <input type="text" data-meta="${key}" value="${App.escapeAttr(meta[key] || '')}"
+                       placeholder="${App.escapeAttr(placeholder)}"
+                       onchange="Weekly.onMetaChange(this.dataset.meta, this.value)">
+            </label>`;
+        el.innerHTML = head + `
+            <div class="weekly-meta-body">
+                ${field('recipientsTo', 'To', 'Jules Seelen <jules@seelen.nl>')}
+                ${field('recipientsCc', 'Cc', 'Jasper Bauer <jasper@zeroplex.nl>')}
+                ${field('greeting', 'Greeting', 'Jules')}
+                ${field('clientName', 'Name in subject', 'leave empty to use the project name')}
+                <div class="weekly-meta-actions">
+                    <button type="button" class="btn btn-outline btn-small" onclick="Weekly.applyMeta()">
+                        Apply to draft
+                    </button>
+                    <span class="weekly-meta-hint">Rewrites the To / Cc / Subject lines and the greeting in the draft above.</span>
+                </div>
+            </div>`;
+    }
+
+    async function onMetaChange(key, value) {
+        meta = { ...meta, [key]: value };
+        try {
+            meta = await api.putMeta(projectId, { [key]: value });
+        } catch (e) {
+            flashToolbar('Could not save mail details: ' + (e.message || e));
+        }
+        renderMeta();
+    }
+
+    function toggleMeta() {
+        metaOpen = !metaOpen;
+        renderMeta();
+    }
+
+    // Rewrite the header lines and the greeting of the CURRENT draft from the
+    // stored mail details. Only those four lines are touched.
+    function applyMeta() {
+        const lines = markdown.split('\n');
+        const dividerIdx = lines.findIndex(l => /^---\s*$/.test(l));
+        const limit = dividerIdx === -1 ? lines.length : dividerIdx;
+
+        const setHeader = (label, value) => {
+            const re = new RegExp(`^\\*\\*${label}:\\*\\*`);
+            const idx = lines.findIndex((l, i) => i < limit && re.test(l));
+            if (idx !== -1) lines[idx] = `**${label}:** ${value}`;
+        };
+        if (meta.recipientsTo) setHeader('To', meta.recipientsTo);
+        if (meta.recipientsCc) setHeader('Cc', meta.recipientsCc);
+
+        const subjIdx = lines.findIndex((l, i) => i < limit && /^\*\*Subject:\*\*/.test(l));
+        if (subjIdx !== -1) {
+            const name = meta.clientName || projectName;
+            lines[subjIdx] = lines[subjIdx].replace(
+                /^(\*\*Subject:\*\* ZeroPlex - periodieke update ).*( - week \d+)$/,
+                `$1${name}$2`
+            );
+        }
+        if (meta.greeting) {
+            const greetIdx = lines.findIndex(l => /^Hoi\s+.*,\s*$/.test(l));
+            if (greetIdx !== -1) lines[greetIdx] = `Hoi ${meta.greeting},`;
+        }
+
+        markdown = lines.join('\n');
+        const ta = document.getElementById('weekly-editor');
+        if (ta) ta.value = markdown;
+        scheduleSave();
+        renderPreview();
+        flashToolbar('Mail details applied');
     }
 
     function renderArchiveSelect() {
@@ -596,6 +733,8 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
                             title="Store this draft in the history and start the next week from the empty template">🗄️ Archive &amp; start new week</button>
                 </div>
 
+                <div class="weekly-suggestions" id="weekly-meta"></div>
+
                 <div class="weekly-suggestions" id="weekly-suggestions"></div>
 
                 <div class="weekly-split">
@@ -623,6 +762,7 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
         renderPreview();
         renderSuggestions();
         renderArchiveSelect();
+        renderMeta();
         renderStatus();
     }
 
@@ -641,8 +781,9 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
         container.innerHTML = shell();
 
         try {
-            const [draft, list] = await Promise.all([api.get(pid), api.listArchive(pid)]);
+            const [draft, list, m] = await Promise.all([api.get(pid), api.listArchive(pid), api.getMeta(pid)]);
             if (projectId !== pid) return;   // user switched projects mid-load
+            meta = m || { recipientsTo: '', recipientsCc: '', greeting: '', clientName: '' };
             // First open of a project seeds the template and saves it, so the
             // CLI's weekly-append has real sections to append into from day one.
             const isFirstOpen = !draft.markdown;
@@ -695,6 +836,31 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
         const todo = App.getTodos().find(t => t.id === todoId);
         if (!todo) return;
         insertBullet(section, todo.title);
+    }
+
+    function removeSuggestion(todoId) {
+        const todo = App.getTodos().find(t => t.id === todoId);
+        if (!todo) return;
+        removeBullet(todo);
+    }
+
+    // Drop the weekly / wu:* tags so the todo stops being a candidate at all.
+    // The bullet, if one was already inserted, is left alone — dropping it
+    // from the list is not the same decision as pulling it out of the mail.
+    async function untagSuggestion(todoId) {
+        const todo = App.getTodos().find(t => t.id === todoId);
+        if (!todo) return;
+        const kept = (todo.tags || []).filter(t => {
+            const lower = String(t).toLowerCase();
+            return lower !== 'weekly' && !lower.startsWith('wu:');
+        });
+        try {
+            await App.setTodoTags(todoId, kept);
+            renderSuggestions();
+            flashToolbar('Removed from the weekly list');
+        } catch (e) {
+            flashToolbar('Could not update tags: ' + (e.message || e));
+        }
     }
 
     // Copies the rendered preview by selecting it — same approach as
@@ -807,7 +973,9 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
 
     return {
         mount, unmount, isMounted, isBusy, flush,
-        onInput, setLayout, toggleSuggestions, insertSuggestion,
+        onInput, setLayout, toggleSuggestions,
+        insertSuggestion, removeSuggestion, untagSuggestion,
+        toggleMeta, onMetaChange, applyMeta,
         copyForOutlook, copyHtml, archiveAndReset, openArchive, closeArchive, deleteArchive,
         refresh: renderSuggestions
     };

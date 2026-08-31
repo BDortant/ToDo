@@ -70,12 +70,15 @@ Bound to `127.0.0.1:8084` only — no auth, not exposed beyond localhost.
 | `POST` | `/api/todos/reorder` | Bulk priority assignment (drag-to-reorder) |
 | `POST` | `/api/todos/cleanup` | Remove Done items older than last working day |
 | `GET` | `/api/projects/resolve?q=...` | Resolve project by id or fuzzy name |
+| `GET` | `/api/projects/:id/meta` | Per-project mail details (To / Cc / greeting) |
+| `PUT` | `/api/projects/:id/meta` | Partial update of the mail details |
 | `GET` | `/api/projects/:id/weekly` | Current weekly-update draft |
 | `PUT` | `/api/projects/:id/weekly` | Replace the draft |
 | `POST` | `/api/projects/:id/weekly/append` | Append a bullet under a section (`notable` / `client` / `us`) |
 | `POST` | `/api/projects/:id/weekly/archive` | Archive the draft and reseed |
 | `GET` | `/api/projects/:id/weekly/archive` | List archived drafts |
 | `GET` | `/api/projects/:id/weekly/archive/:archiveId` | Read one archived draft |
+| `DELETE` | `/api/projects/:id/weekly/archive/:archiveId` | Delete one archived draft |
 | `DELETE` | `/api/projects/:id/weekly/archive/:archiveId` | Delete one archived draft |
 | `GET` | `/api/export` | `/api/state` plus weekly drafts and their archive (for download) |
 | `POST` | `/api/import` | Replace state with uploaded JSON |

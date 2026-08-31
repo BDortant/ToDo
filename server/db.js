@@ -101,6 +101,22 @@ export function initDb(dataDir) {
             FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
         );
 
+        -- Long-lived per-project mail details, so the weekly template comes up
+        -- pre-filled instead of asking the same questions every week. Mirrors
+        -- the recurring_recipients_* / email_subject_name keys the
+        -- project-overview skill keeps in project-facts/<slug>.md; the todo
+        -- CLI is what copies them across.
+        CREATE TABLE IF NOT EXISTS project_meta (
+            project_id     TEXT PRIMARY KEY,
+            recipients_to  TEXT NOT NULL DEFAULT '',
+            recipients_cc  TEXT NOT NULL DEFAULT '',
+            greeting       TEXT NOT NULL DEFAULT '',
+            client_name    TEXT NOT NULL DEFAULT '',
+            facts_slug     TEXT NOT NULL DEFAULT '',
+            updated_date   TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+
         CREATE INDEX IF NOT EXISTS idx_todos_project ON todos(project_id);
         CREATE INDEX IF NOT EXISTS idx_todos_status ON todos(status);
         CREATE INDEX IF NOT EXISTS idx_weekly_archive_project
@@ -203,6 +219,7 @@ export function getState() {
 export function getExportState() {
     return {
         ...getState(),
+        projectMeta: listProjectMeta(),
         weeklyDrafts: listWeeklyDrafts(),
         weeklyArchive: listWeeklyArchiveAll()
     };
@@ -699,6 +716,20 @@ export function replaceState(state) {
         // them. Rows whose project didn't survive the import are skipped —
         // the FK would reject them anyway.
         const projectIds = new Set(listProjects().map(p => p.id));
+        const insMeta = db.prepare(
+            `INSERT OR REPLACE INTO project_meta (project_id, ${META_FIELDS.join(', ')}, updated_date)
+             VALUES (?, ${META_FIELDS.map(() => '?').join(', ')}, ?)`
+        );
+        for (const m of Array.isArray(state.projectMeta) ? state.projectMeta : []) {
+            if (!m || !projectIds.has(m.projectId)) continue;
+            insMeta.run(
+                m.projectId,
+                String(m.recipientsTo ?? ''), String(m.recipientsCc ?? ''),
+                String(m.greeting ?? ''), String(m.clientName ?? ''), String(m.factsSlug ?? ''),
+                m.updatedDate || new Date().toISOString()
+            );
+        }
+
         const insDraft = db.prepare(
             'INSERT OR REPLACE INTO project_weekly (project_id, markdown, updated_date) VALUES (?, ?, ?)'
         );
@@ -730,6 +761,76 @@ export function replaceState(state) {
 
 export function setLastBackup(iso) {
     db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('last_backup', ?)").run(iso);
+}
+
+// --- Per-project mail details -----------------------------------
+
+const META_FIELDS = ['recipients_to', 'recipients_cc', 'greeting', 'client_name', 'facts_slug'];
+
+const EMPTY_META = {
+    recipientsTo: '', recipientsCc: '', greeting: '', clientName: '', factsSlug: '', updatedDate: null
+};
+
+export function getProjectMeta(projectId) {
+    requireProject(projectId);
+    const row = db.prepare('SELECT * FROM project_meta WHERE project_id = ?').get(projectId);
+    if (!row) return { projectId, ...EMPTY_META };
+    return {
+        projectId,
+        recipientsTo: row.recipients_to,
+        recipientsCc: row.recipients_cc,
+        greeting: row.greeting,
+        clientName: row.client_name,
+        factsSlug: row.facts_slug,
+        updatedDate: row.updated_date
+    };
+}
+
+// Partial update: only the keys actually supplied are touched, so the CLI can
+// push recipients from project-facts without clobbering a greeting typed in
+// the UI.
+export function saveProjectMeta(projectId, patch) {
+    requireProject(projectId);
+    if (!patch || typeof patch !== 'object') throw new HttpError(400, 'Invalid mail details');
+
+    const incoming = {
+        recipients_to: patch.recipientsTo,
+        recipients_cc: patch.recipientsCc,
+        greeting: patch.greeting,
+        client_name: patch.clientName,
+        facts_slug: patch.factsSlug
+    };
+    const current = getProjectMeta(projectId);
+    const existing = {
+        recipients_to: current.recipientsTo,
+        recipients_cc: current.recipientsCc,
+        greeting: current.greeting,
+        client_name: current.clientName,
+        facts_slug: current.factsSlug
+    };
+    const values = META_FIELDS.map(f => (incoming[f] === undefined ? existing[f] : String(incoming[f])));
+
+    db.prepare(`
+        INSERT INTO project_meta (project_id, ${META_FIELDS.join(', ')}, updated_date)
+        VALUES (?, ${META_FIELDS.map(() => '?').join(', ')}, ?)
+        ON CONFLICT(project_id) DO UPDATE SET
+            ${META_FIELDS.map(f => `${f} = excluded.${f}`).join(', ')},
+            updated_date = excluded.updated_date
+    `).run(projectId, ...values, new Date().toISOString());
+
+    return getProjectMeta(projectId);
+}
+
+function listProjectMeta() {
+    return db.prepare('SELECT * FROM project_meta').all().map(r => ({
+        projectId: r.project_id,
+        recipientsTo: r.recipients_to,
+        recipientsCc: r.recipients_cc,
+        greeting: r.greeting,
+        clientName: r.client_name,
+        factsSlug: r.facts_slug,
+        updatedDate: r.updated_date
+    }));
 }
 
 // --- Weekly update drafts ---------------------------------------

@@ -95,19 +95,63 @@ When the status mapping is wrong for one item, add one of these tags alongside
 An override tag implies inclusion, so `wu:client` on its own works without also
 adding `weekly`.
 
+### Mail details (per-project prefill)
+
+Above the suggestions sits a **Mail details** panel holding four long-lived
+fields per project, so a new week does not start by retyping the same
+recipients:
+
+| Field | Used for |
+|---|---|
+| `To` | the `**To:**` reference line |
+| `Cc` | the `**Cc:**` reference line |
+| `Greeting` | the `Hoi <name>,` line |
+| `Name in subject` | the subject, when the client's mail name differs from the project name |
+
+These live outside the markdown, so they survive an archive and pre-fill the
+next template. Editing them does **not** rewrite the draft you already have,
+because silently rewriting text you typed is worse than an extra click:
+**Apply to draft** does that explicitly, touching only the To / Cc / Subject
+lines and the greeting.
+
+They mirror the `recurring_recipients_to`, `recurring_recipients_cc` and
+`email_subject_name` keys the `project-overview` skill keeps in
+`project-facts/<slug>.md`. The app cannot read `~/.claude/skills`, so the `todo`
+CLI is what copies them across:
+
+```bash
+todo --action=project-meta --project=Hendrix
+todo --action=project-meta-set --project=Hendrix \
+     --to="Jules Seelen <jules@seelen.nl>" --greeting="Jules" --facts-slug=hendrix-fruit
+```
+
+`project-meta-set` is a partial update: only the flags you pass are written, so
+pushing recipients from the facts file never clobbers a greeting typed in the
+UI. Pass an empty value (`--cc=`) to clear a field.
+
 ### The suggestions strip
 
 Above the editor sits a collapsible **From your todos** strip listing every
 candidate for this project, grouped by target section. Each row shows:
 
-- **✓ in draft** — the draft already mentions this item
-- **＋ insert** — click to append it as a bullet under the right `##` heading
+- **＋ insert** — append it as a bullet under the right `##` heading
+- **✓ in draft** — already mentioned; clicking takes the bullet back out again
+- **✕** — not for the weekly update: strips the `weekly` / `wu:*` tags from the
+  todo so it stops being a candidate at all
 
 "Already mentioned" is decided by looking for the item's deliverable id
 (`D####`) in the draft when the title has one, and by a normalised title
 substring match when it does not. Deliverable-id matching is what makes this
 reliable: you will rewrite the wording of a bullet, but you will not rewrite the
 id.
+
+Removing a bullet uses the same matching that decided the item was in the draft,
+so the ✓ and the removal can never disagree. When an item is mentioned only in
+prose rather than as a bullet, removal refuses and says so instead of guessing
+at an edit.
+
+The ✕ deliberately leaves any already-inserted bullet alone: dropping an item
+off the candidate list is not the same decision as pulling it out of the mail.
 
 This strip is the "am I missing something?" check during the week. It never
 changes the draft on its own.
@@ -139,10 +183,13 @@ If the skill's layout changes, this constant has to change with it.
 |---|---|---|
 | `GET` | `/api/projects/:id/weekly` | Current draft `{ projectId, markdown, updatedDate }` |
 | `PUT` | `/api/projects/:id/weekly` | Replace the draft (`{ markdown }`) |
+| `GET` | `/api/projects/:id/meta` | Per-project mail details |
+| `PUT` | `/api/projects/:id/meta` | Partial update of the mail details |
 | `POST` | `/api/projects/:id/weekly/append` | Append a bullet under a section (`{ section, text }`) |
 | `POST` | `/api/projects/:id/weekly/archive` | Archive the current draft, optionally reseed (`{ markdown }`) |
 | `GET` | `/api/projects/:id/weekly/archive` | List archived drafts (newest first, no bodies) |
 | `GET` | `/api/projects/:id/weekly/archive/:archiveId` | One archived draft, body included |
+| `DELETE` | `/api/projects/:id/weekly/archive/:archiveId` | Delete one archived draft |
 
 `section` on the append endpoint is one of `notable`, `client`, `us`. The server
 inserts the bullet at the end of the matching `##` block, creating the heading if
@@ -158,6 +205,7 @@ The `todo` CLI is how Claude writes to the draft during the week.
 
 ```bash
 todo --action=weekly --project=Hendrix                 # print the current draft
+todo --action=project-meta --project=Hendrix           # show the mail details
 todo --action=weekly-append --project=Hendrix \
      --section=us --text="D5456 gaat deze week naar staging"
 todo --action=weekly-set --project=Hendrix --file=draft.md   # replace wholesale
@@ -168,11 +216,44 @@ todo --action=weekly-archive --project=Hendrix         # archive + reseed templa
 low-token call that adds one bullet to the right section without reading or
 rewriting the whole document.
 
+## Client-portal access (why the template says what it says)
+
+The template's line about portal access points at **<support@zeroplex.nl>**, not
+at a personal address. That follows the actual flow in the Alex codebase:
+
+- Portal accounts (`FrontendUser`) are created either by the **M365 contact
+  sync** (for any active contact with an `m365_user_id` in a tenant-linked org,
+  the only creation path under Design E) or by hand from the back-office under
+  **Organization → Contacts → portal action**.
+- The manual route needs the **`manage_portal_access`** permission, which ships
+  to the **Admin** role. Bram's Alex role is *SW Developer*, so this has to be
+  delegated regardless.
+- **No invite or welcome mail is sent** by any of it. Accounts get a random
+  32-char password; the client gets in via M365 SSO, or through a password
+  reset.
+- Auto-provisioned accounts only get the `zp_transfer` module. Access to the
+  software projects area (`software_projects`) has to be granted explicitly,
+  unless the contact is an ICT Coordinator, who gets every module.
+
+So a client who "wants access" needs someone with the permission to grant it and
+to tick the software module. The servicedesk address routes that correctly the
+first time.
+
 ## Storage
 
-Two tables, both keyed on the project:
+Three tables, all keyed on the project:
 
 ```sql
+CREATE TABLE project_meta (
+    project_id     TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    recipients_to  TEXT NOT NULL DEFAULT '',
+    recipients_cc  TEXT NOT NULL DEFAULT '',
+    greeting       TEXT NOT NULL DEFAULT '',
+    client_name    TEXT NOT NULL DEFAULT '',
+    facts_slug     TEXT NOT NULL DEFAULT '',
+    updated_date   TEXT NOT NULL
+);
+
 CREATE TABLE project_weekly (
     project_id   TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
     markdown     TEXT NOT NULL DEFAULT '',
