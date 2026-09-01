@@ -135,6 +135,14 @@ recipients:
 | `Greeting` | the `Hoi <name>,` line |
 | `Name in subject` | the subject, when the client's mail name differs from the project name |
 
+The subject is built as `{client} - Wekelijkse update {d-m-yyyy}`, for example
+`NHA - Wekelijkse update 6-10-2025`. Day and month carry no leading zeros.
+
+The template stamps the date when the week is *started*, which is usually a few
+days before you send. **Apply to draft** rebuilds the subject line outright, so
+it also refreshes that date to today and upgrades a draft still carrying the
+older subject wording. Press it before sending.
+
 These live outside the markdown, so they survive an archive and pre-fill the
 next template. Opening a draft that still carries the raw placeholders
 (`{vul de ontvanger(s) in}`, `Hoi {voornaam},`) resolves them from the mail

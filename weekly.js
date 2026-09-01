@@ -68,6 +68,15 @@ const Weekly = (() => {
         // 'Cancelled' intentionally absent — never suggested.
     };
 
+    // Subject-line date: d-m-yyyy, no leading zeros (6-10-2025).
+    function subjectDate(date) {
+        return `${date.getDate()}-${date.getMonth() + 1}-${date.getFullYear()}`;
+    }
+
+    function subjectLine(name) {
+        return `**Subject:** ${name} - Wekelijkse update ${subjectDate(new Date())}`;
+    }
+
     function isoWeek(date) {
         // ISO-8601 week number. Thursday of the current week decides the year,
         // which is why the day is shifted before dividing.
@@ -85,14 +94,13 @@ const Weekly = (() => {
     // a new week starts with the recipients and greeting already right. Any
     // field left blank falls back to a visible placeholder.
     function buildTemplate(name) {
-        const week = isoWeek(new Date());
         const to = meta.recipientsTo || '{vul de ontvanger(s) in}';
         const cc = meta.recipientsCc || '{vul in of verwijder}';
         const subjectName = meta.clientName || name;
         const greeting = meta.greeting || '{voornaam}';
         return `**To:** ${to}
 **Cc:** ${cc}
-**Subject:** ZeroPlex - periodieke update ${subjectName} - week ${week}
+${subjectLine(subjectName)}
 
 ---
 
@@ -787,13 +795,12 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
 
         const subjIdx = lines.findIndex((l, i) => i < limit && /^\*\*Subject:\*\*/.test(l));
         if (subjIdx !== -1) {
-            const name = meta.clientName || projectName;
-            // Function replacement: a `$` in the client name would otherwise be
-            // read as a replacement pattern and mangle the subject line.
-            lines[subjIdx] = lines[subjIdx].replace(
-                /^(\*\*Subject:\*\* ZeroPlex - periodieke update ).*( - week \d+)$/,
-                (_match, prefix, suffix) => `${prefix}${name}${suffix}`
-            );
+            // Rebuilt outright rather than patched, so the date is refreshed to
+            // today and a draft still carrying the old subject format is
+            // upgraded. The template seeds the date when the week is started,
+            // which is usually days before you send, so "Apply to draft" is
+            // how you bring it up to date before sending.
+            lines[subjIdx] = subjectLine(meta.clientName || projectName);
         }
         if (meta.greeting) {
             const greetIdx = lines.findIndex(l => /^Hoi\s+.*,\s*$/.test(l));

@@ -123,7 +123,7 @@ Bound to `127.0.0.1:8084`. **No authentication** — see [Security posture](#sec
 | `POST` | `/api/import` | Replace **all** state with the uploaded JSON |
 | `POST` | `/api/meta/last-backup` | Update the `lastBackup` timestamp |
 
-`clientName` is the name used in the mail subject when it differs from the project name in the app — for instance a project called `GMS` whose client reads as "Customs Support Safety".
+The subject is built as `{client} - Wekelijkse update {d-m-yyyy}`, e.g. `NHA - Wekelijkse update 6-10-2025`. `clientName` supplies the client half when it differs from the project name in the app — for instance a project called `GMS` whose client reads as "Customs Support Safety".
 
 ## Security posture
 
