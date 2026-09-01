@@ -261,6 +261,37 @@ docker compose up -d</pre>
         return todo.status === 'Done' || todo.status === 'Cancelled';
     }
 
+    // "The ball is not in my court." Deliberately narrower than "not
+    // actionable": `Waiting on Me` and `In Review` are still my move, and
+    // `On Hold` is paused rather than waiting on a person. Kept consistent
+    // with the weekly-update section mapping in weekly.js, which files these
+    // same two statuses under "Benodigde acties vanuit jullie".
+    const WAITING_ON_OTHERS = ['Waiting on Client', 'Waiting on Third Party'];
+
+    function isWaitingOnOthers(todo) {
+        return WAITING_ON_OTHERS.includes(todo.status);
+    }
+
+    // Open count + how many of those are parked on someone else. Rendered as
+    // two badges so the primary number still matches the row count you get
+    // when you click through.
+    function projectCounts(todos) {
+        const open = todos.filter(t => !isOffQueue(t));
+        const waiting = open.filter(isWaitingOnOthers).length;
+        return {
+            open: open.length,
+            waiting,
+            // Every open item is on someone else: nothing here needs me today.
+            parked: open.length > 0 && waiting === open.length
+        };
+    }
+
+    function countBadges({ open, waiting }) {
+        const openBadge = `<span class="project-count" title="${open} open item(s)">${open}</span>`;
+        if (waiting === 0) return openBadge;
+        return openBadge + `<span class="project-count waiting" title="${waiting} of them waiting on the client or a third party">${waiting}</span>`;
+    }
+
     function statusToBadgeClass(status) {
         const map = {
             'To Do': 'badge-todo',
@@ -753,18 +784,21 @@ docker compose up -d</pre>
         const projectList = document.getElementById('project-list');
         // Counts are "open work in this project", not "rows that exist".
         // A project whose only todo is Done reads as 0, not 1.
-        const noProjectCount = data.todos.filter(t => !t.projectId && !isOffQueue(t)).length;
+        const noProjectStats = projectCounts(data.todos.filter(t => !t.projectId));
         const noProjectActive = selectedProjectId === NO_PROJECT_ID ? 'active' : '';
-        const noProjectItem = `<li class="project-item project-item-no-project ${noProjectActive}" data-id="${NO_PROJECT_ID}" onclick="App.selectProject(this.dataset.id)">
-            <span><em>No Project</em> <span class="project-count">${noProjectCount}</span></span>
+        const noProjectItem = `<li class="project-item project-item-no-project ${noProjectActive} ${noProjectStats.parked ? 'parked' : ''}" data-id="${NO_PROJECT_ID}" onclick="App.selectProject(this.dataset.id)">
+            <span><em>No Project</em> ${countBadges(noProjectStats)}</span>
         </li>`;
 
         projectList.innerHTML = noProjectItem + data.projects.map(p => {
-            const count = data.todos.filter(t => t.projectId === p.id && !isOffQueue(t)).length;
+            const stats = projectCounts(data.todos.filter(t => t.projectId === p.id));
             const active = selectedProjectId === p.id ? 'active' : '';
             const safePid = escapeAttr(p.id);
-            return `<li class="project-item ${active}" data-id="${safePid}" onclick="App.selectProject(this.dataset.id)">
-                <span>${escapeHTML(p.name)} <span class="project-count">${count}</span></span>
+            return `<li class="project-item ${active} ${stats.parked ? 'parked' : ''}"
+                        data-id="${safePid}"
+                        ${stats.parked ? 'title="Everything open here is waiting on someone else"' : ''}
+                        onclick="App.selectProject(this.dataset.id)">
+                <span>${escapeHTML(p.name)} ${countBadges(stats)}</span>
                 <span class="project-item-actions">
                     <button class="btn-icon" onclick="event.stopPropagation(); App.openProjectModal(this.closest('li').dataset.id)" title="Rename">✏️</button>
                     <button class="btn-icon" onclick="event.stopPropagation(); App.deleteProject(this.closest('li').dataset.id)" title="Delete">🗑️</button>

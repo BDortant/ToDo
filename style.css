@@ -317,6 +317,20 @@ body {
     margin-left: 8px;
 }
 
+/* Second badge: how many of the open items are parked on the client or a
+   third party. Outlined rather than filled so it reads as a subset of the
+   number to its left, not as another total. Sits tight against it. */
+.project-count.waiting {
+    background: transparent;
+    border: 1px solid #e6c9a0;
+    color: #a35c07;
+    margin-left: 3px;
+}
+
+/* Nothing open here needs me today — everything is on someone else. */
+.project-item.parked > span:first-child { color: #999; }
+.project-item.parked .project-count { background: #eee; color: #999; }
+
 .view-toggle {
     list-style: none;
     margin-bottom: 8px;
