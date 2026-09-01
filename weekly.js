@@ -936,7 +936,11 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
         const pid = projectId;
         const name = projectName;
         const body = markdown;
-        const unsaved = saveState === 'dirty' || saveState === 'saving';
+        // 'error' counts as unsaved too. After a failed save the state stays
+        // 'error' until the next keystroke, so leaving at that moment used to
+        // skip both the retry and the warning — losing the edits silently,
+        // which is the exact case this teardown save exists for.
+        const unsaved = saveState === 'dirty' || saveState === 'saving' || saveState === 'error';
         const pending = inFlight;
 
         if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }

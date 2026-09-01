@@ -48,6 +48,9 @@ real work:
   failure can no longer be shown in it. `unmount()` waits for the save and
   raises an alert naming the project if it failed. Otherwise the last edit
   disappears with no warning at all.
+- **A failed save is retried on the way out.** `saveState` stays `'error'`
+  until the next keystroke, so leaving right after a failure counts as unsaved:
+  the teardown save runs again and warns if it fails a second time.
 - **A teardown save is self-contained.** Leaving a project hands its final save
   to `saveOnTeardown()`, which takes everything it needs as arguments and never
   touches `saveState` or the DOM. Routing it through the normal `flush()` let a
