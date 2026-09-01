@@ -253,6 +253,14 @@ docker compose up -d</pre>
         return false;
     }
 
+    // "Off-queue" = finished work: Done and Cancelled. These carry priority 0
+    // (rendered as "—"), sort to the bottom of the table, and are excluded
+    // from the sidebar counts. Single definition so the table and the
+    // counters can never disagree about what counts as open.
+    function isOffQueue(todo) {
+        return todo.status === 'Done' || todo.status === 'Cancelled';
+    }
+
     function statusToBadgeClass(status) {
         const map = {
             'To Do': 'badge-todo',
@@ -375,7 +383,7 @@ docker compose up -d</pre>
 
         // Sort: open items first, then off-queue (Done/Cancelled) at bottom.
         // Within open: by chosen column. Within off-queue: by completedDate desc.
-        const isOff = t => t.status === 'Done' || t.status === 'Cancelled';
+        const isOff = isOffQueue;
         todos = todos.slice().sort((a, b) => {
             const aOff = isOff(a), bOff = isOff(b);
             if (aOff !== bOff) return aOff ? 1 : -1;
@@ -743,14 +751,16 @@ docker compose up -d</pre>
     function render() {
         // Sidebar: project list — pinned "No Project" pseudo-entry first, then real projects
         const projectList = document.getElementById('project-list');
-        const noProjectCount = data.todos.filter(t => !t.projectId).length;
+        // Counts are "open work in this project", not "rows that exist".
+        // A project whose only todo is Done reads as 0, not 1.
+        const noProjectCount = data.todos.filter(t => !t.projectId && !isOffQueue(t)).length;
         const noProjectActive = selectedProjectId === NO_PROJECT_ID ? 'active' : '';
         const noProjectItem = `<li class="project-item project-item-no-project ${noProjectActive}" data-id="${NO_PROJECT_ID}" onclick="App.selectProject(this.dataset.id)">
             <span><em>No Project</em> <span class="project-count">${noProjectCount}</span></span>
         </li>`;
 
         projectList.innerHTML = noProjectItem + data.projects.map(p => {
-            const count = data.todos.filter(t => t.projectId === p.id).length;
+            const count = data.todos.filter(t => t.projectId === p.id && !isOffQueue(t)).length;
             const active = selectedProjectId === p.id ? 'active' : '';
             const safePid = escapeAttr(p.id);
             return `<li class="project-item ${active}" data-id="${safePid}" onclick="App.selectProject(this.dataset.id)">

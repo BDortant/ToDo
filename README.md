@@ -5,7 +5,7 @@ A small personal to-do app with a vanilla HTML/CSS/JS frontend and a tiny Node +
 ## Features
 
 - Projects, todos with status / effort / deadline / assignee / notes / tags
-- Drag-to-reorder priority (overall and per-project)
+- Drag-to-reorder priority (overall and per-project); finished items drop to priority 0, render as "—", and are excluded from the sidebar counts
 - Recurring tasks that auto-spawn the next occurrence on completion
 - "Daily" view (open items + Done since last working day)
 - Per-project **Weekly update** tab: split markdown editor, live Outlook-styled preview, Copy for Outlook, and week archive (see [docs/weekly-update.md](docs/weekly-update.md))
