@@ -26,9 +26,17 @@ const Weekly = (() => {
     let layout = 'split';            // 'editor' | 'split' | 'preview'
     let suggestionsOpen = true;
     let saveTimer = null;
+    let inFlight = null;             // Promise of the PUT currently on the wire, or null
     let saveState = 'idle';          // 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
+    let saveErrorProject = '';       // project the last failed save belonged to
     let savedAt = null;
     let archive = [];
+    // Bumped on every mount and unmount. Async work captures it and re-checks
+    // after each await, so a slow response from an abandoned session can never
+    // write into the session that replaced it. Comparing projectId is not
+    // enough: leaving a project and returning to the SAME one makes a stale
+    // response look current again.
+    let mountToken = 0;
     let meta = { recipientsTo: '', recipientsCc: '', greeting: '', clientName: '' };
     let metaOpen = false;
     let loadError = null;
@@ -377,6 +385,28 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
         container.querySelectorAll('h4').forEach(el => replaceHeading(el, '10pt', '14pt', '12px', '4px'));
     }
 
+    // Markdown setup lives here rather than in index.html so the tests
+    // exercise the same configuration the page runs with.
+    //
+    // Raw HTML is escaped rather than rendered. A draft is never meant to
+    // contain HTML: the body is markdown and the Outlook converter builds its
+    // own markup. Since the local API is unauthenticated, anything that can
+    // write a draft could otherwise get script into the preview, which is
+    // rendered with innerHTML. Escaping is enough here and avoids pulling in a
+    // sanitiser library for a case we don't want to support anyway.
+    function configureMarked() {
+        if (!window.marked) return;
+        marked.setOptions({ breaks: true });
+        marked.use({
+            renderer: {
+                html: (token) => {
+                    const raw = typeof token === 'string' ? token : (token && token.raw) || '';
+                    return String(raw).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                }
+            }
+        });
+    }
+
     function toHtml(bodyMarkdown, outlook) {
         if (!window.marked || !bodyMarkdown.trim()) return '';
         const div = document.createElement('div');
@@ -501,25 +531,45 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
         saveTimer = setTimeout(flush, SAVE_DEBOUNCE_MS);
     }
 
+    // Resolves only once the server holds the text as it was when flush() was
+    // called. Callers rely on that: `archiveAndReset` must not let an older
+    // PUT land after the archive POST and resurrect the pre-archive draft.
     async function flush() {
         if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
-        if (saveState !== 'dirty') return;
+
+        // Captured before any await. Past this point the user may switch
+        // projects, and this save still belongs to the project it started on.
         const pid = projectId;
         const body = markdown;
+
+        // A save already on the wire has to finish first, otherwise two PUTs
+        // race and the slower one wins.
+        if (inFlight) await inFlight;
+        if (!pid || saveState !== 'dirty') return;
+
         saveState = 'saving';
         renderStatus();
-        try {
-            await api.put(pid, body);
-            // A newer keystroke may have landed while the request was in
-            // flight; only claim "saved" if nothing changed underneath.
-            if (projectId === pid && markdown === body && saveState === 'saving') {
-                saveState = 'saved';
-                savedAt = new Date();
+
+        const request = (async () => {
+            try {
+                await api.put(pid, body);
+                // Any keystroke since would have set 'dirty' again, so a
+                // still-'saving' state means this text is what's stored.
+                if (saveState === 'saving') {
+                    saveState = 'saved';
+                    savedAt = new Date();
+                }
+            } catch (e) {
+                saveState = 'error';
+                saveErrorProject = projectName;
+                console.error('Weekly draft save failed:', e);
+            } finally {
+                inFlight = null;
             }
-        } catch (e) {
-            saveState = 'error';
-            console.error('Weekly draft save failed:', e);
-        }
+        })();
+
+        inFlight = request;
+        await request;
         renderStatus();
     }
 
@@ -645,10 +695,17 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
     }
 
     async function onMetaChange(key, value) {
+        const token = mountToken;
+        const pid = projectId;
         meta = { ...meta, [key]: value };
         try {
-            meta = await api.putMeta(projectId, { [key]: value });
+            const saved = await api.putMeta(pid, { [key]: value });
+            // Applying this to a project the user has since switched to would
+            // show one client's recipients under another client's draft.
+            if (token !== mountToken) return;
+            meta = saved;
         } catch (e) {
+            if (token !== mountToken) return;
             flashToolbar('Could not save mail details: ' + (e.message || e));
         }
         renderMeta();
@@ -665,9 +722,11 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
     // drafts that were started before their mail details existed.
     function fillPlaceholders() {
         let out = markdown;
-        if (meta.recipientsTo) out = out.replace('**To:** {vul de ontvanger(s) in}', `**To:** ${meta.recipientsTo}`);
-        if (meta.recipientsCc) out = out.replace('**Cc:** {vul in of verwijder}', `**Cc:** ${meta.recipientsCc}`);
-        if (meta.greeting) out = out.replace('Hoi {voornaam},', `Hoi ${meta.greeting},`);
+        // Function replacements, so a `$&` or `$1` inside a stored value is
+        // inserted literally instead of being read as a replacement pattern.
+        if (meta.recipientsTo) out = out.replace('**To:** {vul de ontvanger(s) in}', () => `**To:** ${meta.recipientsTo}`);
+        if (meta.recipientsCc) out = out.replace('**Cc:** {vul in of verwijder}', () => `**Cc:** ${meta.recipientsCc}`);
+        if (meta.greeting) out = out.replace('Hoi {voornaam},', () => `Hoi ${meta.greeting},`);
         if (out === markdown) return false;
         markdown = out;
         return true;
@@ -691,9 +750,11 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
         const subjIdx = lines.findIndex((l, i) => i < limit && /^\*\*Subject:\*\*/.test(l));
         if (subjIdx !== -1) {
             const name = meta.clientName || projectName;
+            // Function replacement: a `$` in the client name would otherwise be
+            // read as a replacement pattern and mangle the subject line.
             lines[subjIdx] = lines[subjIdx].replace(
                 /^(\*\*Subject:\*\* ZeroPlex - periodieke update ).*( - week \d+)$/,
-                `$1${name}$2`
+                (_match, prefix, suffix) => `${prefix}${name}${suffix}`
             );
         }
         if (meta.greeting) {
@@ -789,6 +850,7 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
         // Switching away from a project with pending edits must not lose them.
         if (projectId && projectId !== pid) await flush();
 
+        const token = ++mountToken;
         projectId = pid;
         projectName = name;
         loadError = null;
@@ -796,7 +858,7 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
 
         try {
             const [draft, list, m] = await Promise.all([api.get(pid), api.listArchive(pid), api.getMeta(pid)]);
-            if (projectId !== pid) return;   // user switched projects mid-load
+            if (token !== mountToken) return;   // this session was replaced mid-load
             meta = m || { recipientsTo: '', recipientsCc: '', greeting: '', clientName: '' };
             // First open of a project seeds the template and saves it, so the
             // CLI's weekly-append has real sections to append into from day one.
@@ -813,6 +875,7 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
             if (isFirstOpen || filled) scheduleSave();
             if (filled) flashToolbar('Mail details filled in');
         } catch (e) {
+            if (token !== mountToken) return;
             loadError = e;
             container.innerHTML = `<div class="load-error">
                 <h2>Could not load the weekly update draft</h2>
@@ -822,7 +885,18 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
     }
 
     function unmount() {
-        flush();
+        // The weekly pane is torn down immediately, so a failure here can no
+        // longer be shown in it. Without this the last edit is lost silently,
+        // which defeats the point of a draft that accumulates all week.
+        flush().then(() => {
+            if (saveState !== 'error') return;
+            alert(
+                `The weekly update draft for ${saveErrorProject || 'this project'} could not be saved.\n\n` +
+                `Your last edits were not stored. Check that the backend is running, ` +
+                `then reopen that project's Weekly update tab and retype them.`
+            );
+        });
+        mountToken++;          // invalidate any load still in flight
         projectId = null;
     }
 
@@ -989,6 +1063,8 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
         const ae = document.activeElement;
         return !!(ae && ae.id === 'weekly-editor');
     }
+
+    configureMarked();
 
     return {
         mount, unmount, isMounted, isBusy, flush,

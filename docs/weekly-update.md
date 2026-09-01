@@ -36,7 +36,23 @@ bordered tables with the ZeroPlex orange header row, and table-based horizontal
 rules. It is rendered from the same DOM that the copy buttons read, so what you
 see is what gets pasted.
 
-Edits autosave 800 ms after you stop typing. The save state is shown next to the
+Edits autosave 800 ms after you stop typing. Three guarantees hold around that,
+because this draft is written across a whole week and losing part of it costs
+real work:
+
+- **Saves are serialised.** `flush()` waits for any PUT already on the wire
+  before starting another, and only resolves once the server holds the text as
+  it was when it was called. Without that, clicking *Archive & start new week*
+  during a save let the older PUT land last and resurrect the pre-archive draft.
+- **A failed final save is reported.** Leaving the tab tears the pane down, so a
+  failure can no longer be shown in it. `unmount()` waits for the save and
+  raises an alert naming the project if it failed. Otherwise the last edit
+  disappears with no warning at all.
+- **Stale sessions cannot write.** Every mount and unmount bumps a generation
+  token; async work captures it and re-checks after each await. Comparing the
+  project id alone was not enough, because leaving a project and returning to
+  the *same* one made an abandoned response look current again — which could
+  put one client's recipients into another client's draft. The save state is shown next to the
 tabs (`Saving…` / `Saved HH:MM`). Because the draft is a document rather than a
 row in the table, it is deliberately **not** part of the 10-second `/api/state`
 poll: an open editor is never overwritten by a background refresh.
@@ -232,6 +248,18 @@ were given `display: flex`. `style.css` therefore carries a
 jsdom cannot catch this class of bug: it applies its own `[hidden]` rule above
 author class rules, so a computed-style assertion passes whether or not the
 guard exists. The guard is covered by a static stylesheet check instead.
+
+## Raw HTML in a draft
+
+`weekly.js` configures `marked` to **escape** HTML tokens rather than render
+them, via `configureMarked()`. The preview is written with `innerHTML`, and the
+local API has no authentication, so anything able to write a draft could
+otherwise get script running in the app's origin.
+
+Escaping is enough here and avoids vendoring a sanitiser: a draft is markdown,
+and the Outlook converter builds its own markup, so raw HTML is not a feature
+worth supporting. The configuration lives in `weekly.js` rather than
+`index.html` so the tests run against the same setup as the page.
 
 ## Client-portal access (why the template says what it says)
 

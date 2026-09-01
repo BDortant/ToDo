@@ -231,7 +231,7 @@
 
 <!-- marked is vendored, not CDN-loaded: this app has to work offline. -->
 <script src="vendor/marked.min.js"></script>
-<script>marked.setOptions({ breaks: true });</script>
+<!-- weekly.js configures marked (line breaks + raw-HTML escaping) on load. -->
 <script src="weekly.js"></script>
 <script src="app.js"></script>
 

@@ -4,7 +4,6 @@
 // 127.0.0.1:PORT (default 8084). No auth — localhost only.
 // =============================================================
 import express from 'express';
-import cors from 'cors';
 import path from 'node:path';
 import fs from 'node:fs';
 import {
@@ -32,7 +31,22 @@ const PUBLIC_DIR = process.env.PUBLIC_DIR || path.resolve('..');
 initDb(DATA_DIR);
 
 const app = express();
-app.use(cors());
+
+// No CORS headers on purpose.
+//
+// This API has no authentication, and it now holds client contact details,
+// deliverable references and drafted client mail. With `cors()` the server
+// answered every origin with `Access-Control-Allow-Origin: *`, so any page
+// open in the browser could read the whole todo list — and write to it.
+//
+// Nothing legitimate needs it: the frontend is served from this same origin,
+// and the `todo` CLI uses curl, where the same-origin policy does not apply.
+// Without the header the browser blocks cross-origin reads, and the JSON
+// content-type on every write triggers a preflight that now fails too.
+//
+// If the frontend is ever split onto another origin (the TODO_API_BASE
+// override in app.js), reintroduce cors() with an explicit origin allowlist
+// rather than the wildcard.
 app.use(express.json({ limit: '5mb' }));
 
 // --- API ---------------------------------------------------------
