@@ -48,6 +48,17 @@ real work:
   failure can no longer be shown in it. `unmount()` waits for the save and
   raises an alert naming the project if it failed. Otherwise the last edit
   disappears with no warning at all.
+- **A teardown save is self-contained.** Leaving a project hands its final save
+  to `saveOnTeardown()`, which takes everything it needs as arguments and never
+  touches `saveState` or the DOM. Routing it through the normal `flush()` let a
+  save for the project you just left consume the shared dirty flag, so the
+  project you just opened silently ended up with no save request of its own.
+- **Archiving refuses to run over an unsaved draft.** The archive endpoint files
+  whatever the server holds, so archiving after a failed save would store the
+  older text and then wipe the editor to a fresh template. `archiveAndReset()`
+  now stops and says why.
+- **Mail-detail writes are queued.** Two overlapping PUTs for the same field
+  could be processed out of order, leaving the older recipient stored.
 - **Stale sessions cannot write.** Every mount and unmount bumps a generation
   token; async work captures it and re-checks after each await. Comparing the
   project id alone was not enough, because leaving a project and returning to

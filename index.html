@@ -59,9 +59,11 @@
              "All items", "By project" and "No Project" have no weekly
              update, because the client mail is always per project. -->
         <div class="project-tabs" id="project-tabs" role="tablist" aria-label="Project tabs" hidden>
-            <button type="button" class="project-tab active" data-tab="list" role="tab" aria-selected="true"
+            <button type="button" id="project-tab-list" class="project-tab active" data-tab="list"
+                    role="tab" aria-selected="true" aria-controls="main-content"
                     onclick="App.setProjectTab('list')">List</button>
-            <button type="button" class="project-tab" data-tab="weekly" role="tab" aria-selected="false"
+            <button type="button" id="project-tab-weekly" class="project-tab" data-tab="weekly"
+                    role="tab" aria-selected="false" aria-controls="main-content"
                     onclick="App.setProjectTab('weekly')">Weekly update</button>
         </div>
 
@@ -81,6 +83,9 @@
             </label>
         </div>
 
+        <!-- Both tabs swap this same container, so it is one panel whose
+             label follows the selected tab (kept in sync in App.render).
+             role/aria-labelledby are only set while the tabs are shown. -->
         <div id="main-content"></div>
     </main>
 </div>
@@ -212,7 +217,7 @@
 
 <!-- Archived weekly update (read-only) -->
 <div class="modal-backdrop" id="weekly-archive-modal">
-    <div class="modal modal-wide">
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="weekly-archive-title">
         <h3 id="weekly-archive-title">Archived update</h3>
         <div class="weekly-archive-body">
             <div id="weekly-archive-preview" class="weekly-preview"></div>

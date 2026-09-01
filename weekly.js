@@ -27,8 +27,8 @@ const Weekly = (() => {
     let suggestionsOpen = true;
     let saveTimer = null;
     let inFlight = null;             // Promise of the PUT currently on the wire, or null
+    let teardownSave = null;         // Final save of a session already torn down, or null
     let saveState = 'idle';          // 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
-    let saveErrorProject = '';       // project the last failed save belonged to
     let savedAt = null;
     let archive = [];
     // Bumped on every mount and unmount. Async work captures it and re-checks
@@ -531,22 +531,24 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
         saveTimer = setTimeout(flush, SAVE_DEBOUNCE_MS);
     }
 
-    // Resolves only once the server holds the text as it was when flush() was
-    // called. Callers rely on that: `archiveAndReset` must not let an older
-    // PUT land after the archive POST and resurrect the pre-archive draft.
+    // Save for the CURRENTLY MOUNTED session. Resolves only once the server
+    // holds the text as of the call, and reports whether that succeeded, so
+    // `archiveAndReset` can refuse to archive over edits that never landed.
+    //
+    // Teardown saves do NOT come through here — see saveOnTeardown(). Mixing
+    // the two would let a save for the project you just left write into the
+    // shared editor state of the project you just opened.
     async function flush() {
         if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
 
-        // Captured before any await. Past this point the user may switch
-        // projects, and this save still belongs to the project it started on.
+        // A previous session's final save, or a PUT already on the wire, has
+        // to land first: otherwise two PUTs race and the slower one wins.
+        if (teardownSave) await teardownSave;
+        if (inFlight) await inFlight;
+        if (!projectId || saveState !== 'dirty') return saveState !== 'error';
+
         const pid = projectId;
         const body = markdown;
-
-        // A save already on the wire has to finish first, otherwise two PUTs
-        // race and the slower one wins.
-        if (inFlight) await inFlight;
-        if (!pid || saveState !== 'dirty') return;
-
         saveState = 'saving';
         renderStatus();
 
@@ -561,7 +563,6 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
                 }
             } catch (e) {
                 saveState = 'error';
-                saveErrorProject = projectName;
                 console.error('Weekly draft save failed:', e);
             } finally {
                 inFlight = null;
@@ -571,6 +572,32 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
         inFlight = request;
         await request;
         renderStatus();
+        return saveState !== 'error';
+    }
+
+    // Final save for a session being torn down. Deliberately self-contained:
+    // it takes everything it needs as arguments and never touches saveState,
+    // savedAt or the DOM, because by the time it settles all of those belong
+    // to whichever project was opened next. A failure is reported with the
+    // name of the project it actually belonged to.
+    function saveOnTeardown(pid, name, body, pending) {
+        const done = (async () => {
+            try {
+                if (pending) await pending;
+                await api.put(pid, body);
+            } catch (e) {
+                console.error('Weekly draft teardown save failed:', e);
+                alert(
+                    `The weekly update draft for ${name} could not be saved.\n\n` +
+                    `Your last edits were not stored. Check that the backend is running, ` +
+                    `then reopen that project's Weekly update tab and retype them.`
+                );
+            } finally {
+                if (teardownSave === done) teardownSave = null;
+            }
+        })();
+        teardownSave = done;
+        return done;
     }
 
     // --- Rendering -------------------------------------------------
@@ -694,21 +721,32 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
             </div>`;
     }
 
+    // Mail-detail writes are chained rather than fired in parallel. Two
+    // overlapping PUTs for the same field can otherwise be processed in the
+    // wrong order, leaving the older value stored — a silently wrong recipient
+    // on a client mail. A queue makes the last edit the last write, always.
+    let metaQueue = Promise.resolve();
+
     async function onMetaChange(key, value) {
         const token = mountToken;
         const pid = projectId;
         meta = { ...meta, [key]: value };
-        try {
-            const saved = await api.putMeta(pid, { [key]: value });
-            // Applying this to a project the user has since switched to would
-            // show one client's recipients under another client's draft.
-            if (token !== mountToken) return;
-            meta = saved;
-        } catch (e) {
-            if (token !== mountToken) return;
-            flashToolbar('Could not save mail details: ' + (e.message || e));
-        }
-        renderMeta();
+
+        metaQueue = metaQueue.then(async () => {
+            try {
+                const saved = await api.putMeta(pid, { [key]: value });
+                // Applying this to a project the user has since switched to
+                // would show one client's recipients under another's draft.
+                if (token !== mountToken) return;
+                meta = saved;
+            } catch (e) {
+                if (token !== mountToken) return;
+                flashToolbar('Could not save mail details: ' + (e.message || e));
+            }
+        });
+
+        await metaQueue;
+        if (token === mountToken) renderMeta();
     }
 
     function toggleMeta() {
@@ -885,19 +923,21 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
     }
 
     function unmount() {
-        // The weekly pane is torn down immediately, so a failure here can no
-        // longer be shown in it. Without this the last edit is lost silently,
-        // which defeats the point of a draft that accumulates all week.
-        flush().then(() => {
-            if (saveState !== 'error') return;
-            alert(
-                `The weekly update draft for ${saveErrorProject || 'this project'} could not be saved.\n\n` +
-                `Your last edits were not stored. Check that the backend is running, ` +
-                `then reopen that project's Weekly update tab and retype them.`
-            );
-        });
+        // Everything the final save needs is captured here, while it is still
+        // this project's. The editor is then released straight away — app.js
+        // calls unmount() synchronously from render(), so it cannot wait.
+        const pid = projectId;
+        const name = projectName;
+        const body = markdown;
+        const unsaved = saveState === 'dirty' || saveState === 'saving';
+        const pending = inFlight;
+
+        if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
         mountToken++;          // invalidate any load still in flight
         projectId = null;
+        inFlight = null;
+
+        if (pid && unsaved) saveOnTeardown(pid, name, body, pending);
     }
 
     function isMounted(pid) {
@@ -1004,7 +1044,21 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
             `The current draft stays readable under History.`
         );
         if (!ok) return;
-        await flush();
+
+        // The archive endpoint stores whatever the SERVER currently holds. If
+        // the pending save never landed, archiving would file the older text
+        // and then wipe the editor to a fresh template, losing the edits for
+        // good. Stop instead.
+        const saved = await flush();
+        if (!saved) {
+            alert(
+                `Your latest edits to the ${projectName} draft have not been saved yet, ` +
+                `so archiving now would file the previous version and lose them.\n\n` +
+                `Check that the backend is running, wait for "Saved", then archive again.`
+            );
+            return;
+        }
+
         try {
             const fresh = buildTemplate(projectName);
             const res = await api.archive(projectId, fresh);
@@ -1058,6 +1112,7 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
     // True while the user is mid-edit, so App's 10s poll knows not to
     // re-render #main-content out from under the textarea.
     function isBusy() {
+        if (teardownSave) return true;
         if (!projectId) return false;
         if (saveState === 'dirty' || saveState === 'saving') return true;
         const ae = document.activeElement;

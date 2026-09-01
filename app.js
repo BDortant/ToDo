@@ -842,6 +842,17 @@ docker compose up -d</pre>
             btn.classList.toggle('active', isActive);
             btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
         });
+        // #main-content is the panel both tabs control, so its label has to
+        // follow whichever tab is selected. Outside a project there are no
+        // tabs, so it is a plain container again rather than an orphan
+        // tabpanel pointing at a hidden label.
+        if (onRealProject) {
+            container.setAttribute('role', 'tabpanel');
+            container.setAttribute('aria-labelledby', `project-tab-${projectTab}`);
+        } else {
+            container.removeAttribute('role');
+            container.removeAttribute('aria-labelledby');
+        }
         document.querySelector('.filters-bar').hidden = onRealProject && projectTab === 'weekly';
 
         if (currentView === 'all') {

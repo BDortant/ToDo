@@ -49,6 +49,29 @@ const app = express();
 // rather than the wildcard.
 app.use(express.json({ limit: '5mb' }));
 
+// Cross-origin write guard.
+//
+// Dropping cors() stopped other sites READING this API, but not writing to it.
+// A "simple" cross-origin POST needs no preflight, so any page could still fire
+// off POST /api/todos/cleanup (which deletes completed todos) or /api/normalize
+// and have it execute — the attacker just cannot read the reply. Verified.
+//
+// Browsers always send `Origin` on a cross-origin request, so rejecting a
+// non-local Origin on state-changing methods closes that off. Requests with no
+// Origin header at all are left alone: that is the `todo` CLI (curl), where the
+// same-origin policy does not apply and forgery is not a thing.
+const ALLOWED_ORIGINS = new Set([
+    `http://localhost:${PORT}`,
+    `http://127.0.0.1:${PORT}`
+]);
+
+app.use((req, res, next) => {
+    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+    const origin = req.get('origin');
+    if (!origin || ALLOWED_ORIGINS.has(origin)) return next();
+    res.status(403).json({ error: 'Cross-origin writes are not allowed' });
+});
+
 // --- API ---------------------------------------------------------
 
 app.get('/api/state', (_req, res) => {
