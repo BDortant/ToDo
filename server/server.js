@@ -4,7 +4,6 @@
 // 127.0.0.1:PORT (default 8084). No auth — localhost only.
 // =============================================================
 import express from 'express';
-import cors from 'cors';
 import path from 'node:path';
 import fs from 'node:fs';
 import {
@@ -17,6 +16,11 @@ import {
     replaceState, setLastBackup,
     normalizePriorities,
     resolveProject,
+    getExportState,
+    getProjectMeta, saveProjectMeta,
+    getWeeklyDraft, saveWeeklyDraft, appendWeeklyBullet,
+    archiveWeeklyDraft, listWeeklyArchive, getWeeklyArchiveEntry,
+    deleteWeeklyArchiveEntry,
     HttpError
 } from './db.js';
 
@@ -27,8 +31,46 @@ const PUBLIC_DIR = process.env.PUBLIC_DIR || path.resolve('..');
 initDb(DATA_DIR);
 
 const app = express();
-app.use(cors());
+
+// No CORS headers on purpose.
+//
+// This API has no authentication, and it now holds client contact details,
+// deliverable references and drafted client mail. With `cors()` the server
+// answered every origin with `Access-Control-Allow-Origin: *`, so any page
+// open in the browser could read the whole todo list — and write to it.
+//
+// Nothing legitimate needs it: the frontend is served from this same origin,
+// and the `todo` CLI uses curl, where the same-origin policy does not apply.
+// Without the header the browser blocks cross-origin reads, and the JSON
+// content-type on every write triggers a preflight that now fails too.
+//
+// If the frontend is ever split onto another origin (the TODO_API_BASE
+// override in app.js), reintroduce cors() with an explicit origin allowlist
+// rather than the wildcard.
 app.use(express.json({ limit: '5mb' }));
+
+// Cross-origin write guard.
+//
+// Dropping cors() stopped other sites READING this API, but not writing to it.
+// A "simple" cross-origin POST needs no preflight, so any page could still fire
+// off POST /api/todos/cleanup (which deletes completed todos) or /api/normalize
+// and have it execute — the attacker just cannot read the reply. Verified.
+//
+// Browsers always send `Origin` on a cross-origin request, so rejecting a
+// non-local Origin on state-changing methods closes that off. Requests with no
+// Origin header at all are left alone: that is the `todo` CLI (curl), where the
+// same-origin policy does not apply and forgery is not a thing.
+const ALLOWED_ORIGINS = new Set([
+    `http://localhost:${PORT}`,
+    `http://127.0.0.1:${PORT}`
+]);
+
+app.use((req, res, next) => {
+    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+    const origin = req.get('origin');
+    if (!origin || ALLOWED_ORIGINS.has(origin)) return next();
+    res.status(403).json({ error: 'Cross-origin writes are not allowed' });
+});
 
 // --- API ---------------------------------------------------------
 
@@ -100,6 +142,30 @@ app.post('/api/todos/:id/priority', wrap((req) => {
 app.post('/api/todos/:id/snooze', wrap((req) => snoozeTodo(req.params.id, req.body?.until)));
 app.post('/api/todos/:id/unsnooze', wrap((req) => unsnoozeTodo(req.params.id)));
 
+// Weekly update drafts — one markdown document per project, built up over
+// the week and copied into Outlook. Deliberately its own endpoint family
+// rather than a field on /api/state (see docs/weekly-update.md).
+// Per-project mail details (To / Cc / greeting / client name) used to
+// pre-fill the weekly template.
+app.get('/api/projects/:id/meta', wrap((req) => getProjectMeta(req.params.id)));
+app.put('/api/projects/:id/meta', wrap((req) => saveProjectMeta(req.params.id, req.body || {})));
+
+app.get('/api/projects/:id/weekly', wrap((req) => getWeeklyDraft(req.params.id)));
+app.put('/api/projects/:id/weekly', wrap((req) => saveWeeklyDraft(req.params.id, req.body?.markdown)));
+app.post('/api/projects/:id/weekly/append', wrap((req) =>
+    appendWeeklyBullet(req.params.id, req.body?.section, req.body?.text)
+));
+app.post('/api/projects/:id/weekly/archive', wrap((req) =>
+    archiveWeeklyDraft(req.params.id, req.body?.markdown)
+));
+app.get('/api/projects/:id/weekly/archive', wrap((req) => listWeeklyArchive(req.params.id)));
+app.get('/api/projects/:id/weekly/archive/:archiveId', wrap((req) =>
+    getWeeklyArchiveEntry(req.params.id, req.params.archiveId)
+));
+app.delete('/api/projects/:id/weekly/archive/:archiveId', wrap((req) =>
+    deleteWeeklyArchiveEntry(req.params.id, req.params.archiveId)
+));
+
 // Project resolver (chat tool sugar)
 app.get('/api/projects/resolve', wrap((req) => {
     const p = resolveProject(req.query.q);
@@ -109,7 +175,7 @@ app.get('/api/projects/resolve', wrap((req) => {
 
 // Import / export
 app.get('/api/export', (_req, res) => {
-    res.json(getState());
+    res.json(getExportState());
 });
 
 app.post('/api/import', wrap((req) => replaceState(req.body)));
@@ -140,7 +206,12 @@ const FRONTEND_FILES = {
     '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
     '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
     '/app.js': { file: 'app.js', type: 'application/javascript; charset=utf-8' },
-    '/style.css': { file: 'style.css', type: 'text/css; charset=utf-8' }
+    '/weekly.js': { file: 'weekly.js', type: 'application/javascript; charset=utf-8' },
+    '/style.css': { file: 'style.css', type: 'text/css; charset=utf-8' },
+    // Vendored rather than loaded from a CDN: this app runs on localhost and
+    // has to keep working without internet. Same version the zp-md-panel tool
+    // uses, so the Outlook preview renders identically.
+    '/vendor/marked.min.js': { file: 'vendor/marked.min.js', type: 'application/javascript; charset=utf-8' }
 };
 
 for (const [route, { file, type }] of Object.entries(FRONTEND_FILES)) {
