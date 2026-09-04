@@ -77,6 +77,35 @@ todo --action=weekly-append --project=Hendrix --section=us --text="D5456 gaat de
 
 `todo --action=help` prints every action. The `todo` skill documents the tag conventions.
 
+## Tests
+
+```bash
+npm install     # once, pulls jsdom
+npm test
+```
+
+Three suites under `tests/`, run in separate processes because each one
+mutates globals:
+
+| Suite | Covers |
+|---|---|
+| `weekly.test.mjs` | The weekly tab: template, preview, escaping, todo suggestions, mail details, and the whole save lifecycle |
+| `app-tabs.test.mjs` | Project tabs, sidebar counts and the waiting badge, accessibility wiring |
+| `stylesheet.test.mjs` | Static guard on the `[hidden]` rule (see below) |
+
+They load the **real** `app.js` and `weekly.js` into a jsdom document rather
+than testing mocks. That is deliberate: every bug this app actually had was a
+lifecycle bug — a save landing after a project switch, a teardown consuming
+another session's dirty flag — and none of those are visible when a function is
+tested in isolation.
+
+The suites double as regression proof. Reverting the mount-generation token
+makes a test fail with one client's email address written into another client's
+draft header; reverting the teardown split makes a test fail with a project's
+edit never reaching the server.
+
+`.github/workflows/tests.yml` runs them on every push and pull request.
+
 ## API
 
 Bound to `127.0.0.1:8084`. **No authentication** — see [Security posture](#security-posture).
