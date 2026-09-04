@@ -472,4 +472,68 @@ check('the layout attribute follows the toggle', window.document.querySelector('
 Weekly.setLayout('split');
 check('and switches back', window.document.querySelector('.weekly-pane').dataset.layout === 'split');
 
+// ---------------------------------------------------------------------------
+section('Open in Outlook produces a usable .eml');
+
+const EML_META = {
+    recipientsTo: 'Bart Crijnen <b.crijnen@nha.nl>, Tim Schlaghecke <t.schlaghecke@nha.nl>',
+    recipientsCc: 'Jasper Bauer <jasper@zeroplex.nl>',
+    greeting: 'Bart, Tim',
+    clientName: 'Vitalvé',            // non-ASCII on purpose
+    factsSlug: ''
+};
+stubFetch({
+    'GET /meta': EML_META,
+    'GET /weekly': { projectId: 'PG', markdown: '', updatedDate: null },
+    'GET /weekly/archive': [],
+    'PUT /weekly': {}
+});
+await Weekly.mount('PG', 'NHA', container);
+await tick();
+
+// Capture the download instead of performing it.
+let downloaded = null;
+// weekly.js resolves a bare `URL` to the global, not window.URL.
+const realCreateObjectURL = global.URL.createObjectURL;
+global.URL.createObjectURL = (blob) => { downloaded = blob; return 'blob:test'; };
+global.URL.revokeObjectURL = () => {};
+let filename = '';
+const realCreate = window.document.createElement.bind(window.document);
+window.document.createElement = (tag) => {
+    const el = realCreate(tag);
+    if (tag === 'a') el.click = () => { filename = el.download; };
+    return el;
+};
+
+Weekly.downloadEml();
+check('a file was produced', !!downloaded);
+const eml = await downloaded.text();
+
+check('the filename is dated and slugged', /^wekelijkse-update-nha-\d+-\d+-\d+\.eml$/.test(filename), filename);
+check('X-Unsent marks it as a draft, not received mail', eml.startsWith('X-Unsent: 1'));
+check('there is no From header', !/^From:/m.test(eml));
+check('To is filled from the draft header', eml.includes('To: Bart Crijnen <b.crijnen@nha.nl>, Tim Schlaghecke <t.schlaghecke@nha.nl>'));
+check('Cc is filled', eml.includes('Cc: Jasper Bauer <jasper@zeroplex.nl>'));
+check('the non-ASCII subject is RFC 2047 encoded', /^Subject: =\?UTF-8\?B\?/m.test(eml),
+    eml.split('\r\n').find(l => l.startsWith('Subject:')));
+check('the body is declared as base64 HTML',
+    eml.includes('Content-Type: text/html; charset=utf-8') && eml.includes('Content-Transfer-Encoding: base64'));
+
+const decoded = Buffer.from(eml.split('\r\n\r\n')[1].replace(/\r\n/g, ''), 'base64').toString('utf8');
+check('the decoded body is a complete HTML document', decoded.startsWith('<html>') && decoded.endsWith('</html>'));
+check('the subject name survives the round trip', /Vitalv/.test(
+    Buffer.from(eml.match(/^Subject: =\?UTF-8\?B\?(.+)\?=$/m)[1], 'base64').toString('utf8')));
+check('the body carries the greeting', decoded.includes('Hoi Bart, Tim,'));
+check('the body carries the Outlook table styling', decoded.includes('background-color:#F7921E'));
+check('the reference header is not in the mail body', !decoded.includes('**To:**'));
+
+// Unresolved placeholders must never reach a real mail header.
+type('**To:** {vul de ontvanger(s) in}\n**Cc:** {vul in of verwijder}\n**Subject:** Test - Wekelijkse update 1-1-2026\n\n---\n\nHoi daar,\n');
+downloaded = null;
+Weekly.downloadEml();
+const placeholderEml = await downloaded.text();
+check('a placeholder To is left out rather than sent literally', !placeholderEml.includes('vul de ontvanger'));
+check('no empty To header is emitted', !/^To:\s*$/m.test(placeholderEml));
+check('the hand-typed subject is used as-is', placeholderEml.includes('Subject: Test - Wekelijkse update 1-1-2026'));
+
 report();

@@ -85,6 +85,30 @@ own reference and is intentionally excluded, matching the layout rule in the
 
 In Outlook, paste with **Keep Source Formatting**.
 
+## Open in Outlook
+
+**Open in Outlook** downloads the draft as an `.eml` file. Opening it gives a
+ready-to-send message with the recipients, subject and styled body already in
+place, so there is nothing to retype each week.
+
+- **To / Cc / Subject** come from the reference block above the `---`, so what
+  you see in the draft is what ends up in the mail. An unresolved placeholder
+  (`{vul de ontvanger(s) in}`) is treated as empty rather than written into a
+  real header. If the subject line is missing entirely, one is generated.
+- **`X-Unsent: 1`** is the header that makes Outlook open the file as an unsent
+  draft you can edit and send, instead of a received message.
+- **No `From` header** on purpose: Outlook fills in the sending account, and
+  supplying one nudges it back towards treating the file as received mail.
+- The subject is RFC 2047 encoded when it contains non-ASCII, so a client name
+  like *Vitalvé* does not arrive as mojibake.
+- The file is named `wekelijkse-update-<project>-<d-m-yyyy>.eml`.
+
+The `.eml` is **disposable output, never a second copy to edit**. Change the
+draft (in the tab, or with `todo --action=weekly-append`) and download again;
+regeneration is cheap, so the file can never drift from the draft. Once the
+message is open in Outlook it belongs to Outlook — edits there do not flow
+back.
+
 The Outlook HTML conversion is a port of the PocketDev `zp-md-panel` tool
 (`IaC/pocket-dev/tools/zp-md-panel.json`): table-based `<hr>` and blockquotes,
 spacer paragraphs for vertical gaps, headings rewritten as `<p><span>`, and

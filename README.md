@@ -32,7 +32,7 @@ Vitalvé     0
 
 ### Weekly update
 
-Selecting a project reveals two tabs: **List** and **Weekly update**. The second is a persisted markdown draft of that client's periodic mail, with a split editor, a live Outlook-styled preview, **Copy for Outlook**, per-project mail details, and a week archive.
+Selecting a project reveals two tabs: **List** and **Weekly update**. The second is a persisted markdown draft of that client's periodic mail, with a split editor, a live Outlook-styled preview, per-project mail details and a week archive. **Open in Outlook** downloads it as an `.eml` that opens as a ready-to-send message with recipients, subject and body filled in; **Copy for Outlook** remains for pasting the body by hand.
 
 The draft is built up *during* the week rather than written on send-day. Full detail in **[docs/weekly-update.md](docs/weekly-update.md)**.
 

@@ -204,6 +204,59 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
         };
     }
 
+    // Read the To / Cc / Subject reference block above the divider. What the
+    // draft shows is what goes into the file, so editing the header by hand
+    // works. Unresolved placeholders are treated as empty rather than being
+    // written into a real mail header.
+    function draftHeaders(md) {
+        const { header } = splitDraft(md);
+        const field = (label) => {
+            const line = header.split('\n').find(l => new RegExp(`^\\*\\*${label}:\\*\\*`).test(l));
+            if (!line) return '';
+            const value = line.replace(new RegExp(`^\\*\\*${label}:\\*\\*\\s*`), '').trim();
+            return /^\{.*\}$/.test(value) ? '' : value;
+        };
+        return { to: field('To'), cc: field('Cc'), subject: field('Subject') };
+    }
+
+    // btoa only handles latin1, so the text is encoded to UTF-8 bytes first.
+    function toBase64(text) {
+        const bytes = new TextEncoder().encode(text);
+        let binary = '';
+        for (const byte of bytes) binary += String.fromCharCode(byte);
+        return btoa(binary);
+    }
+
+    // Anything outside printable ASCII has to be encoded, or Outlook shows
+    // mojibake in the subject (e.g. "Vitalvé").
+    function encodeMailHeader(value) {
+        return /^[\x20-\x7E]*$/.test(value) ? value : `=?UTF-8?B?${toBase64(value)}?=`;
+    }
+
+    // A minimal RFC 5322 message. `X-Unsent: 1` is the part that matters: it
+    // tells Outlook to open the file as an unsent draft you can edit and send,
+    // rather than as a received message. No From header on purpose — Outlook
+    // fills in the sending account, and supplying one pushes it back towards
+    // treating the file as received mail.
+    function buildEml({ to, cc, subject, html }) {
+        const headers = [
+            'X-Unsent: 1',
+            'MIME-Version: 1.0',
+            `Date: ${new Date().toUTCString().replace('GMT', '+0000')}`,
+            `Subject: ${encodeMailHeader(subject)}`
+        ];
+        if (to) headers.push(`To: ${to}`);
+        if (cc) headers.push(`Cc: ${cc}`);
+        headers.push('Content-Type: text/html; charset=utf-8', 'Content-Transfer-Encoding: base64');
+
+        const page = `<html><head><meta charset="utf-8"></head>` +
+            `<body style="font-family:Calibri,Arial,sans-serif;font-size:11pt;color:#1a1a1a;">${html}</body></html>`;
+
+        // Base64 bodies are wrapped at 76 characters, per RFC 2045.
+        const encoded = toBase64(page).replace(/(.{76})/g, '$1\r\n');
+        return `${headers.join('\r\n')}\r\n\r\n${encoded}\r\n`;
+    }
+
     // Port of zp-md-panel's applyStyles. `outlook` selects the clipboard-HTML
     // variant, which omits the display:* and padding declarations that Outlook
     // either ignores or renders badly; the preview variant keeps them so the
@@ -844,6 +897,8 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
                     <span class="weekly-toolbar-spacer"></span>
                     <button class="btn btn-primary btn-small" onclick="Weekly.copyForOutlook()"
                             title="Copies the mail body as rich text. Paste into Outlook with Keep Source Formatting.">📋 Copy for Outlook</button>
+                    <button class="btn btn-primary btn-small" onclick="Weekly.downloadEml()"
+                            title="Downloads an .eml with the recipients, subject and body filled in. Open it and Outlook shows a ready-to-send message.">✉️ Open in Outlook</button>
                     <button class="btn btn-outline btn-small" onclick="Weekly.copyHtml()"
                             title="Copies the inline-styled HTML source">&lt;/&gt; Copy HTML</button>
                     <select class="weekly-archive-select" id="weekly-archive-select"
@@ -1028,6 +1083,40 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
         flashToolbar(ok ? 'Copied for Outlook' : 'Copy failed');
     }
 
+    // Download the draft as an .eml, which Outlook opens as a ready-to-send
+    // message with the recipients, subject and styled body already in place.
+    // Saves retyping the header every week, and the subject carries today's
+    // date rather than the date the week was started.
+    function downloadEml() {
+        const { body } = splitDraft(markdown);
+        const html = toHtml(body, true);
+        if (!html) { flashToolbar('Nothing to send yet'); return; }
+
+        const { to, cc, subject } = draftHeaders(markdown);
+        const finalSubject = subject || `${meta.clientName || projectName} - Wekelijkse update ${subjectDate(new Date())}`;
+        const eml = buildEml({ to, cc, subject: finalSubject, html });
+
+        const url = URL.createObjectURL(new Blob([eml], { type: 'message/rfc822' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `wekelijkse-update-${slug(projectName)}-${subjectDate(new Date())}.eml`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        // Revoked on a delay: revoking immediately can cancel the download in
+        // some browsers before it has read the blob.
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+
+        flashToolbar(to ? 'Opened as .eml — check your downloads' : 'Saved .eml (no recipients set)');
+    }
+
+    function slug(name) {
+        return String(name).toLowerCase().normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-|-$/g, '') || 'project';
+    }
+
     async function copyHtml() {
         const { body } = splitDraft(markdown);
         const html = toHtml(body, true);
@@ -1137,7 +1226,7 @@ Voor algemene vragen is onze servicedesk bereikbaar via support@zeroplex.nl of t
         onInput, setLayout, toggleSuggestions,
         insertSuggestion, removeSuggestion, untagSuggestion,
         toggleMeta, onMetaChange, applyMeta,
-        copyForOutlook, copyHtml, archiveAndReset, openArchive, closeArchive, deleteArchive,
+        copyForOutlook, copyHtml, downloadEml, archiveAndReset, openArchive, closeArchive, deleteArchive,
         refresh: renderSuggestions
     };
 })();
